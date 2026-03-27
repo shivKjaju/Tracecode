@@ -1,14 +1,14 @@
 """
 cli.py — Click command group and all CLI entrypoints.
 
-Day 1: `tracecode init` is fully implemented.
-All other commands are stubs that print a message — they will be
-filled in on Days 2–6 as each module is built.
+Day 1: `tracecode init` fully implemented.
+Day 2: `tracecode session-start` and `tracecode session-end` implemented.
+Days 3–6: remaining stubs will be filled in as each module is built.
 
 Usage:
     tracecode init               # set up ~/.tracecode directory
-    tracecode session-start ...  # called by wrapper (Day 2)
-    tracecode session-end ...    # called by wrapper (Day 2)
+    tracecode session-start ...  # called by wrapper before claude launches
+    tracecode session-end ...    # called by wrapper after claude exits
     tracecode watch ...          # filesystem watcher process (Day 3)
     tracecode serve              # API + UI server (Day 6)
 """
@@ -85,7 +85,7 @@ def cmd_init() -> None:
 
 
 # ---------------------------------------------------------------------------
-# tracecode session-start  (stub — implemented Day 2)
+# tracecode session-start
 # ---------------------------------------------------------------------------
 
 @cli.command("session-start")
@@ -94,33 +94,62 @@ def cmd_init() -> None:
 @click.option("--commit", default="", help="Current HEAD commit SHA")
 def cmd_session_start(project: str, branch: str, commit: str) -> None:
     """
-    Start a new session. Prints the session UUID to stdout.
-    Called by the wrapper script before launching claude.
+    Start a new session. Prints ONLY the session UUID to stdout.
+    Called by the wrapper script; the UUID is captured via command substitution.
+
+    Any errors are written to stderr so they don't corrupt the UUID capture.
     """
-    # Stub: will be implemented in Day 2 (capture/session.py)
-    click.echo("session-start: not yet implemented", err=True)
-    sys.exit(1)
+    from tracecode.capture.session import start_session
+
+    try:
+        config = load_config(DEFAULT_CONFIG_PATH)
+        session_id = start_session(
+            project_path=project,
+            git_branch=branch or None,
+            git_commit=commit or None,
+            config=config,
+        )
+        # Print UUID only — no trailing message, no newline issues.
+        # The wrapper does: SESSION_ID=$(tracecode session-start ...)
+        click.echo(session_id)
+    except Exception as exc:
+        click.echo(f"tracecode session-start error: {exc}", err=True)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
-# tracecode session-end  (stub — implemented Day 2)
+# tracecode session-end
 # ---------------------------------------------------------------------------
 
 @cli.command("session-end")
 @click.option("--session-id", required=True, help="UUID returned by session-start")
 @click.option("--exit-code", type=int, default=0, help="Exit code of the claude process")
-@click.option("--project", default="", help="Project directory path")
-@click.option("--commit-before", default="", help="Git commit SHA at session start")
+@click.option("--project", default="", help="Project directory path (reserved for future use)")
+@click.option("--commit-before", default="", help="Git commit SHA at session start (reserved for future use)")
 def cmd_session_end(
     session_id: str, exit_code: int, project: str, commit_before: str
 ) -> None:
     """
     End a session and run the post-session analysis pipeline.
     Called by the wrapper script after claude exits.
+
+    Day 2: records ended_at and exit code only.
+    Days 3–5 will add watcher aggregation, git analysis, test detection, and scoring.
     """
-    # Stub: will be implemented in Day 2 (capture/session.py)
-    click.echo("session-end: not yet implemented", err=True)
-    sys.exit(1)
+    from tracecode.capture.session import end_session
+
+    try:
+        config = load_config(DEFAULT_CONFIG_PATH)
+        end_session(
+            session_id=session_id,
+            exit_code=exit_code,
+            config=config,
+        )
+        click.echo(f"tracecode: session {session_id[:8]} recorded.", err=True)
+    except Exception as exc:
+        # Never let a session-end failure surface as an error to the developer —
+        # their claude session already ended successfully.
+        click.echo(f"tracecode session-end error: {exc}", err=True)
 
 
 # ---------------------------------------------------------------------------
