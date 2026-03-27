@@ -1,0 +1,31 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Tracecode runtime files (local data, never commit)
+*.db
+*.db-shm
+*.db-wal
+watch_*.jsonl
+server.pid
+tracecode.log
+
+# macOS
+.DS_Store
+
+# editors
+.idea/
+.vscode/
+*.swp
+*.swo
