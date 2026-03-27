@@ -17,6 +17,19 @@
 set -uo pipefail
 
 # ---------------------------------------------------------------------------
+# Tracecode binary — always use the dedicated venv, never rely on PATH
+# ---------------------------------------------------------------------------
+
+TRACECODE="${TRACECODE_BIN:-$HOME/.tracecode/venv/bin/tracecode}"
+
+if [[ ! -x "$TRACECODE" ]]; then
+    echo "tracecode: cannot find tracecode binary at $TRACECODE" >&2
+    echo "  Run: python3 -m venv ~/.tracecode/venv && ~/.tracecode/venv/bin/pip install -e <repo_path>" >&2
+    # Fall through and run claude untracked
+    TRACECODE=""
+fi
+
+# ---------------------------------------------------------------------------
 # Find the real claude binary (not this wrapper)
 # ---------------------------------------------------------------------------
 
@@ -80,7 +93,7 @@ GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "")
 # Start session — captures UUID for all subsequent commands
 # ---------------------------------------------------------------------------
 
-SESSION_ID=$(tracecode session-start \
+SESSION_ID=$("$TRACECODE" session-start \
     --project "$PROJECT_PATH" \
     --branch  "$GIT_BRANCH" \
     --commit  "$GIT_COMMIT") || {
@@ -94,7 +107,7 @@ SESSION_ID=$(tracecode session-start \
 # The watcher stub exits immediately until Day 3 — that's fine.
 # ---------------------------------------------------------------------------
 
-tracecode watch \
+"$TRACECODE" watch \
     --session-id "$SESSION_ID" \
     --path       "$PROJECT_PATH" \
     2>/dev/null &
@@ -116,7 +129,7 @@ CLAUDE_EXIT=$?
 # Post-session pipeline (grows each day as new modules are added)
 # ---------------------------------------------------------------------------
 
-tracecode session-end \
+"$TRACECODE" session-end \
     --session-id    "$SESSION_ID" \
     --exit-code     "$CLAUDE_EXIT" \
     --project       "$PROJECT_PATH" \
