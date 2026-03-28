@@ -33,3 +33,15 @@ export function pct(v: number | null | undefined): string {
   if (v == null) return "—";
   return `${Math.round(v * 100)}%`;
 }
+
+/** Count added/removed lines in a unified diff string */
+export function diffStats(diff: string): { added: number; removed: number; files: number } {
+  let added = 0, removed = 0;
+  const files = new Set<string>();
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+") && !line.startsWith("+++")) added++;
+    else if (line.startsWith("-") && !line.startsWith("---")) removed++;
+    else if (line.startsWith("+++ ")) files.add(line.slice(4));
+  }
+  return { added, removed, files: files.size };
+}

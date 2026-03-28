@@ -11,7 +11,7 @@ import { Suspense, useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { api, type SessionDetail, type DiffResponse } from "@/lib/api";
-import { fmtTime, fmtDuration, shortSha, pct } from "@/lib/format";
+import { fmtTime, fmtDuration, shortSha, pct, diffStats } from "@/lib/format";
 import { QualityBadge } from "@/components/QualityBadge";
 import { ScoreRow } from "@/components/ScoreRow";
 import { FileTouchTable } from "@/components/FileTouchTable";
@@ -159,6 +159,7 @@ function SessionDetailInner() {
           <ScoreRow
             label="Quality"
             value={pct(session.quality_score)}
+            tooltip="Overall session quality. Weighted mix of Outcome (60%) and focus (40%). Higher = Claude shipped something real and stayed on track."
             fill={session.quality_score}
             fillColor={
               (session.quality_score ?? 0) >= 0.7
@@ -171,6 +172,7 @@ function SessionDetailInner() {
           <ScoreRow
             label="Outcome"
             value={`${session.outcome_score ?? "—"} / 4`}
+            tooltip="4 binary signals, 1 point each: committed code, clean git tree at end, tests passed, >70% of touched files survived to git."
             fill={
               session.outcome_score != null ? session.outcome_score / 4 : null
             }
@@ -178,12 +180,14 @@ function SessionDetailInner() {
           <ScoreRow
             label="Wandering"
             value={pct(session.wandering_score)}
+            tooltip="Ratio of 'hot files' (touched 3+ times) to total files touched. High = Claude kept revisiting the same files, suggesting it was stuck or going in circles."
             fill={session.wandering_score}
             fillColor="var(--partial)"
           />
           {session.persistence_rate != null && (
             <ScoreRow
               label={`Persistence${session.persistence_reliable ? "" : " ~"}`}
+              tooltip="Fraction of files Claude touched that actually survived to git. Low = Claude made changes that were reverted or discarded."
               value={pct(session.persistence_rate)}
               fill={session.persistence_rate}
               fillColor="var(--success)"
@@ -391,9 +395,21 @@ function SessionDetailInner() {
               <p className="text-sm text-[var(--muted)]">Loading…</p>
             ) : diff ? (
               diff.available && diff.diff.trim() ? (
-                <div className="rounded bg-[var(--bg)] border border-[var(--border)] p-3 max-h-96 overflow-y-auto">
-                  <DiffViewer diff={diff.diff} />
-                </div>
+                <>
+                  {(() => {
+                    const { added, removed, files } = diffStats(diff.diff);
+                    return (
+                      <div className="flex gap-4 mb-2 text-sm font-mono">
+                        <span className="text-[var(--success)]">+{added} lines</span>
+                        <span className="text-[var(--fail)]">−{removed} lines</span>
+                        <span className="text-[var(--muted)]">{files} file{files !== 1 ? "s" : ""}</span>
+                      </div>
+                    );
+                  })()}
+                  <div className="rounded bg-[var(--bg)] border border-[var(--border)] p-3 max-h-96 overflow-y-auto">
+                    <DiffViewer diff={diff.diff} />
+                  </div>
+                </>
               ) : (
                 <p className="text-sm text-[var(--muted)] italic">
                   {!diff.available

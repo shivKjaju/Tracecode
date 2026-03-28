@@ -165,7 +165,60 @@ def cmd_watch(session_id: str, path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# tracecode serve  (stub — implemented Day 6)
+# ---------------------------------------------------------------------------
+# tracecode guard  (PreToolUse hook for Claude Code)
+# ---------------------------------------------------------------------------
+
+@cli.command("guard")
+def cmd_guard() -> None:
+    """
+    Claude Code PreToolUse hook — blocks dangerous bash commands.
+    Reads tool-use event from stdin (JSON), exits 2 to block or 0 to allow.
+    Install with: tracecode install-guard
+    """
+    from tracecode.guard import run
+    run()
+
+
+@cli.command("install-guard")
+def cmd_install_guard() -> None:
+    """
+    Register the guard as a PreToolUse hook in ~/.claude/settings.json.
+    """
+    import json as _json
+    from pathlib import Path
+
+    settings_path = Path.home() / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if settings_path.exists():
+        try:
+            settings = _json.loads(settings_path.read_text())
+        except _json.JSONDecodeError:
+            settings = {}
+    else:
+        settings = {}
+
+    guard_cmd = str(Path.home() / ".tracecode" / "venv" / "bin" / "tracecode") + " guard"
+    hook_entry = {"type": "command", "command": guard_cmd}
+    pre_tool_use = settings.setdefault("hooks", {}).setdefault("PreToolUse", [])
+
+    # Check if already installed
+    for entry in pre_tool_use:
+        if entry.get("matcher") == "Bash":
+            for h in entry.get("hooks", []):
+                if "tracecode" in h.get("command", ""):
+                    click.echo("Guard already installed in ~/.claude/settings.json")
+                    return
+
+    pre_tool_use.append({"matcher": "Bash", "hooks": [hook_entry]})
+    settings_path.write_text(_json.dumps(settings, indent=2))
+    click.echo(f"Guard installed in {settings_path}")
+    click.echo("Claude Code will now warn before running dangerous bash commands.")
+
+
+# ---------------------------------------------------------------------------
+# tracecode serve  (implemented Day 6)
 # ---------------------------------------------------------------------------
 
 @cli.command("serve")
