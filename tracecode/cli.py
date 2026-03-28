@@ -170,12 +170,25 @@ def cmd_watch(session_id: str, path: str) -> None:
 
 @cli.command("serve")
 @click.option("--port", default=None, type=int, help="Override port from config")
-@click.option("--daemon", is_flag=True, help="Run in the background")
-def cmd_serve(port: int | None, daemon: bool) -> None:
+@click.option("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
+def cmd_serve(port: int | None, host: str) -> None:
     """
     Start the Tracecode API and UI server on localhost.
-    Serves the REST API at /api/* and the React SPA at /*.
+    Serves the REST API at /api/* and the Next.js UI at /*.
     """
-    # Stub: will be implemented in Day 6 (api/main.py)
-    click.echo("serve: not yet implemented", err=True)
-    sys.exit(1)
+    import uvicorn
+    from tracecode.api.main import app
+
+    config = load_config(DEFAULT_CONFIG_PATH)
+    resolved_port = port or config.server_port
+
+    click.echo(f"Starting Tracecode server at http://{host}:{resolved_port}")
+    click.echo(f"API docs: http://{host}:{resolved_port}/api/docs")
+    click.echo("Press Ctrl+C to stop.")
+
+    uvicorn.run(
+        app,
+        host=host,
+        port=resolved_port,
+        log_level="warning",  # keep output clean; errors still surface
+    )
