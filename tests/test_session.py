@@ -141,14 +141,22 @@ class TestEndSession:
             row = get_session(conn, session_id)
         assert row["claude_exit_code"] == 1
 
-    def test_scores_remain_null_on_day2(self, config: Config, tmp_path: Path) -> None:
-        # Post-session analysis is not wired in yet — all score fields stay NULL
+    def test_scores_computed_after_end_session(self, config: Config, tmp_path: Path) -> None:
+        # Day 5: scoring is live. All score fields should be populated after end_session.
         session_id = start_session(str(tmp_path), None, None, config)
         end_session(session_id, 0, config)
         with get_conn(config.db_path) as conn:
             row = get_session(conn, session_id)
-        for field in ("wandering_score", "quality_score", "outcome_score", "auto_outcome"):
-            assert row[field] is None, f"Expected {field} to be NULL on Day 2"
+        # Scores are computed — not NULL
+        assert row["wandering_score"] is not None
+        assert row["quality_score"] is not None
+        assert row["outcome_score"] is not None
+        assert row["auto_outcome"] is not None
+        # Sanity-check ranges
+        assert 0.0 <= row["wandering_score"] <= 1.0
+        assert 0.0 <= row["quality_score"] <= 1.0
+        assert 0 <= row["outcome_score"] <= 4
+        assert row["auto_outcome"] in ("success", "partial", "incomplete")
 
     def test_does_not_overwrite_other_fields(self, config: Config, tmp_path: Path) -> None:
         session_id = start_session(str(tmp_path), "main", "abc123", config)
