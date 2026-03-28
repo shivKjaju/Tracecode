@@ -20,6 +20,7 @@ from tracecode.api.schemas import (
     FileTouchOut,
     HealthResponse,
     PatchSessionRequest,
+    RiskyCommandOut,
     SessionDetail,
     SessionListResponse,
     SessionSummary,
@@ -27,8 +28,10 @@ from tracecode.api.schemas import (
 from tracecode.config import DEFAULT_CONFIG_PATH, load_config
 from tracecode.db import (
     count_sessions,
+    count_risky_commands,
     get_conn,
     get_file_touches,
+    get_risky_commands,
     get_session,
     list_sessions,
     update_session,
@@ -49,10 +52,11 @@ def _config():
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _session_to_summary(row: dict) -> SessionSummary:
+def _session_to_summary(row: dict, risk_counts: dict | None = None) -> SessionSummary:
     started = row.get("started_at") or 0
     ended = row.get("ended_at")
     duration = (ended - started) if ended else None
+    counts = risk_counts or {"risky": 0, "catastrophic": 0}
     return SessionSummary(
         id=row["id"],
         started_at=row["started_at"],
@@ -79,6 +83,18 @@ def _session_to_summary(row: dict) -> SessionSummary:
         note=row.get("note"),
         perceived_quality=row.get("perceived_quality"),
         duration_seconds=duration,
+        risky_count=counts["risky"],
+        catastrophic_count=counts["catastrophic"],
+    )
+
+
+def _risk_to_out(row: dict) -> RiskyCommandOut:
+    return RiskyCommandOut(
+        id=row["id"],
+        command=row["command"],
+        tier=row["tier"],
+        reason=row["reason"],
+        flagged_at=row["flagged_at"],
     )
 
 
@@ -118,9 +134,13 @@ def list_sessions_route(
     with get_conn(config.db_path) as conn:
         rows = list_sessions(conn, limit=limit, offset=offset)
         total = count_sessions(conn)
+        summaries = [
+            _session_to_summary(r, count_risky_commands(conn, r["id"]))
+            for r in rows
+        ]
 
     return SessionListResponse(
-        sessions=[_session_to_summary(r) for r in rows],
+        sessions=summaries,
         total=total,
         limit=limit,
         offset=offset,
@@ -138,11 +158,14 @@ def get_session_route(session_id: str, config=Depends(_config)):
         if row is None:
             raise HTTPException(status_code=404, detail="Session not found")
         touches = get_file_touches(conn, session_id)
+        risks = get_risky_commands(conn, session_id)
+        risk_counts = count_risky_commands(conn, session_id)
 
-    summary = _session_to_summary(row)
+    summary = _session_to_summary(row, risk_counts)
     return SessionDetail(
         **summary.model_dump(),
         file_touches=[_touch_to_out(t) for t in touches],
+        risky_commands=[_risk_to_out(r) for r in risks],
     )
 
 
@@ -200,9 +223,12 @@ def patch_session_route(
         # Re-fetch after update
         row = get_session(conn, session_id)
         touches = get_file_touches(conn, session_id)
+        risks = get_risky_commands(conn, session_id)
+        risk_counts = count_risky_commands(conn, session_id)
 
-    summary = _session_to_summary(row)
+    summary = _session_to_summary(row, risk_counts)
     return SessionDetail(
         **summary.model_dump(),
         file_touches=[_touch_to_out(t) for t in touches],
+        risky_commands=[_risk_to_out(r) for r in risks],
     )

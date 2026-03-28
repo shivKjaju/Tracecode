@@ -70,9 +70,26 @@ export default function FeedPage() {
               >
                 {/* Project / branch */}
                 <div className="min-w-0">
-                  <span className="text-sm font-medium text-[var(--text)] truncate block">
-                    {s.project_name}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-[var(--text)] truncate">
+                      {s.project_name}
+                    </span>
+                    {s.catastrophic_count > 0 && (
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-[#3a1a1a] text-[var(--fail)] border border-[var(--fail)]/30 shrink-0">
+                        ⛔ {s.catastrophic_count} blocked
+                      </span>
+                    )}
+                    {s.risky_count > 0 && s.catastrophic_count === 0 && (
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-[#2e2006] text-[var(--partial)] border border-[var(--partial)]/30 shrink-0">
+                        ⚠ {s.risky_count} risky
+                      </span>
+                    )}
+                    {s.risky_count > 0 && s.catastrophic_count > 0 && (
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-[#2e2006] text-[var(--partial)] border border-[var(--partial)]/30 shrink-0">
+                        ⚠ {s.risky_count}
+                      </span>
+                    )}
+                  </div>
                   {s.git_branch && (
                     <span className="text-xs text-[var(--muted)] font-mono truncate block">
                       {s.git_branch}

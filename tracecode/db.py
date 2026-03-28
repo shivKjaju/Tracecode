@@ -75,10 +75,20 @@ CREATE TABLE IF NOT EXISTS file_touches (
     persisted       INTEGER                 -- 1=survived to git, 0=reverted, NULL=unknown
 );
 
-CREATE INDEX IF NOT EXISTS idx_sessions_started     ON sessions(started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_sessions_project     ON sessions(project_name, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_file_touches_session ON file_touches(session_id);
-CREATE INDEX IF NOT EXISTS idx_file_touches_hot     ON file_touches(session_id, touch_count DESC);
+CREATE TABLE IF NOT EXISTS risky_commands (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT    NOT NULL,   -- may be empty string if guard fires outside a session
+    command     TEXT    NOT NULL,
+    tier        TEXT    NOT NULL,   -- 'catastrophic' | 'risky'
+    reason      TEXT    NOT NULL,
+    flagged_at  INTEGER NOT NULL    -- Unix seconds
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_started      ON sessions(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_project      ON sessions(project_name, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_file_touches_session  ON file_touches(session_id);
+CREATE INDEX IF NOT EXISTS idx_file_touches_hot      ON file_touches(session_id, touch_count DESC);
+CREATE INDEX IF NOT EXISTS idx_risky_session         ON risky_commands(session_id);
 """
 
 # Columns that may be updated after a session is created.
@@ -325,3 +335,32 @@ def update_file_touch_persisted(
         "UPDATE file_touches SET persisted = ? WHERE id = ?",
         (1 if persisted else 0, touch_id),
     )
+
+
+# ---------------------------------------------------------------------------
+# Risky commands
+# ---------------------------------------------------------------------------
+
+def get_risky_commands(conn: sqlite3.Connection, session_id: str) -> list[dict]:
+    """Return all risky_commands rows for a session, newest first."""
+    rows = conn.execute(
+        "SELECT * FROM risky_commands WHERE session_id = ? ORDER BY flagged_at DESC",
+        (session_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_risky_commands(conn: sqlite3.Connection, session_id: str) -> dict:
+    """Return {'risky': n, 'catastrophic': n} counts for a session."""
+    rows = conn.execute(
+        """
+        SELECT tier, COUNT(*) as n FROM risky_commands
+        WHERE session_id = ?
+        GROUP BY tier
+        """,
+        (session_id,),
+    ).fetchall()
+    result = {"risky": 0, "catastrophic": 0}
+    for r in rows:
+        result[r["tier"]] = r["n"]
+    return result

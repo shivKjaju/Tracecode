@@ -1,25 +1,19 @@
 """
 guard.py — PreToolUse hook for Claude Code.
 
-Reads the tool-use event from stdin (JSON), checks for dangerous bash
-patterns, and exits with code 2 + a warning message to block execution,
-or exits 0 to allow.
+Two tiers:
+
+  CATASTROPHIC — blocked outright (exit 2). No recovery path, machine/OS
+                 destroying in one shot. User must intervene at OS level.
+
+  RISKY        — logged to DB, allowed (exit 0). Claude's own permission
+                 prompt still fires; Tracecode records the attempt so the
+                 session detail shows what risky commands were run.
 
 Claude Code hook protocol:
   - stdin: JSON blob with tool name and input
-  - stdout: message shown to user (when blocking)
-  - exit 0: allow the tool call
-  - exit 2: block the tool call; stdout is shown as the reason
-
-Install via ~/.claude/settings.json:
-  {
-    "hooks": {
-      "PreToolUse": [{
-        "matcher": "Bash",
-        "hooks": [{"type": "command", "command": "~/.tracecode/venv/bin/tracecode guard"}]
-      }]
-    }
-  }
+  - stdout: message shown when blocking (exit 2)
+  - exit 0: allow  |  exit 2: block
 """
 
 from __future__ import annotations
@@ -27,29 +21,46 @@ from __future__ import annotations
 import json
 import re
 import sys
+import time
 
 
 # ---------------------------------------------------------------------------
-# Dangerous patterns
-# Each entry: (regex, human-readable reason)
+# Pattern tiers
 # ---------------------------------------------------------------------------
 
-_PATTERNS: list[tuple[re.Pattern, str]] = [
+# Blocked outright — no recovery possible
+_CATASTROPHIC: list[tuple[re.Pattern, str]] = [
     (
-        re.compile(r"\brm\s+(-\w*r\w*f|-\w*f\w*r)\s*(\/|~|\.\.|/etc|/usr|/bin|/home|/var|/tmp\s*$|\$HOME|\$\{HOME\})", re.I),
-        "recursive force-delete of a system or home directory",
+        re.compile(r"\brm\s+(-\w*r\w*f|-\w*f\w*r)\s*(/\s*$|/\s+|~\s*$|~\s+|\$HOME\s*$|\$\{HOME\}\s*$)", re.I),
+        "recursive force-delete of / or home directory",
     ),
+    (
+        re.compile(r"\bdd\s+if=.*of=/dev/(disk|sda|nvme|hda|vda)", re.I),
+        "dd writing directly to a disk device — will destroy all data",
+    ),
+    (
+        re.compile(r":\(\)\s*\{.*:\|:&\s*\}", re.I),
+        "fork bomb — will crash the OS",
+    ),
+    (
+        re.compile(r">\s*/etc/(passwd|shadow|sudoers)", re.I),
+        "overwriting a critical system auth file",
+    ),
+]
+
+# Logged and allowed — Claude's permission prompt still fires
+_RISKY: list[tuple[re.Pattern, str]] = [
     (
         re.compile(r"\bsudo\s+rm\b", re.I),
         "sudo rm — elevated file deletion",
     ),
     (
         re.compile(r"curl\s+.*\|\s*(ba)?sh\b", re.I),
-        "piping curl output directly to a shell (supply-chain risk)",
+        "curl piped to shell (supply-chain risk)",
     ),
     (
         re.compile(r"wget\s+.*\|\s*(ba)?sh\b", re.I),
-        "piping wget output directly to a shell (supply-chain risk)",
+        "wget piped to shell (supply-chain risk)",
     ),
     (
         re.compile(r"\bgit\s+push\s+.*--force\b.*\b(main|master)\b", re.I),
@@ -65,65 +76,85 @@ _PATTERNS: list[tuple[re.Pattern, str]] = [
     ),
     (
         re.compile(r"\bchmod\s+-R\s+777\b", re.I),
-        "chmod -R 777 opens all files to the world",
+        "chmod -R 777 makes all files world-writable",
     ),
     (
-        re.compile(r">\s*/etc/(passwd|shadow|hosts|sudoers)", re.I),
-        "overwriting a critical system file",
+        re.compile(r"\bkillall\b", re.I),
+        "killall — terminates all matching processes",
     ),
     (
-        re.compile(r"\bkillall\b|\bkill\s+-9\s+1\b", re.I),
-        "killall or killing PID 1 (init/launchd)",
-    ),
-    (
-        re.compile(r"\bdd\s+if=.*of=/dev/(disk|sda|nvme|hd)", re.I),
-        "dd writing directly to a disk device",
-    ),
-    (
-        re.compile(r":\(\)\s*\{.*:\|:&\s*\}", re.I),
-        "fork bomb detected",
+        re.compile(r"\brm\s+(-\w*r\w*f|-\w*f\w*r)\b", re.I),
+        "recursive force-delete",
     ),
 ]
 
 
-def check_command(command: str) -> str | None:
+def _classify(command: str) -> tuple[str, str] | None:
     """
-    Return a warning string if the command matches a dangerous pattern,
-    or None if it looks safe.
+    Returns ("catastrophic", reason) | ("risky", reason) | None if clean.
     """
-    for pattern, reason in _PATTERNS:
+    for pattern, reason in _CATASTROPHIC:
         if pattern.search(command):
-            return reason
+            return ("catastrophic", reason)
+    for pattern, reason in _RISKY:
+        if pattern.search(command):
+            return ("risky", reason)
     return None
 
 
+def _log_to_db(session_id: str, command: str, tier: str, reason: str) -> None:
+    """
+    Write to risky_commands table. Silent on any failure — never block
+    the guard flow due to a DB error.
+    """
+    try:
+        from pathlib import Path
+        from tracecode.db import get_conn
+        db = Path.home() / ".tracecode" / "tracecode.db"
+        with get_conn(db) as conn:
+            conn.execute(
+                """
+                INSERT INTO risky_commands
+                    (session_id, command, tier, reason, flagged_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (session_id, command[:500], tier, reason, int(time.time())),
+            )
+    except Exception:
+        pass
+
+
 def run() -> None:
-    """
-    Entry point — reads stdin JSON, checks the bash command, exits accordingly.
-    """
     try:
         raw = sys.stdin.read()
         if not raw.strip():
-            sys.exit(0)  # no input — allow
-
+            sys.exit(0)
         event = json.loads(raw)
     except (json.JSONDecodeError, OSError):
-        sys.exit(0)  # can't parse — don't block
+        sys.exit(0)
 
-    # Extract command from tool input
     tool_input = event.get("tool_input", {})
     command = tool_input.get("command", "")
+    session_id = event.get("session_id", "")
 
     if not command:
         sys.exit(0)
 
-    reason = check_command(command)
-    if reason:
+    result = _classify(command)
+    if result is None:
+        sys.exit(0)
+
+    tier, reason = result
+
+    if tier == "catastrophic":
         print(
-            f"tracecode guard: blocked — {reason}\n"
-            f"Command: {command[:200]}\n"
-            f"If you intend to run this, use TRACECODE_ALLOW=1 to bypass."
+            f"tracecode: BLOCKED — {reason}\n"
+            f"This command can cause irreversible damage and has been stopped.\n"
+            f"Command: {command[:200]}"
         )
+        _log_to_db(session_id, command, tier, reason)
         sys.exit(2)
 
+    # risky — log and allow (Claude's permission prompt handles the UX)
+    _log_to_db(session_id, command, tier, reason)
     sys.exit(0)

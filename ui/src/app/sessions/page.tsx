@@ -10,7 +10,7 @@
 import { Suspense, useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { api, type SessionDetail, type DiffResponse } from "@/lib/api";
+import { api, type SessionDetail, type DiffResponse, type RiskyCommand } from "@/lib/api";
 import { fmtTime, fmtDuration, shortSha, pct, diffStats } from "@/lib/format";
 import { QualityBadge } from "@/components/QualityBadge";
 import { ScoreRow } from "@/components/ScoreRow";
@@ -350,6 +350,32 @@ function SessionDetailInner() {
           </div>
         </div>
       </div>
+
+      {/* Risky commands */}
+      {session.risky_commands.length > 0 && (
+        <div className="rounded border border-[var(--partial)]/40 bg-[#2e2006]/40 p-4">
+          <p className="text-xs text-[var(--partial)] uppercase tracking-wider mb-3">
+            Flagged Commands ({session.risky_commands.length})
+          </p>
+          <div className="space-y-2">
+            {session.risky_commands.map((r) => (
+              <div key={r.id} className="flex items-start gap-3">
+                <span className={`text-xs px-1.5 py-0.5 rounded shrink-0 mt-0.5 ${
+                  r.tier === "catastrophic"
+                    ? "bg-[#3a1a1a] text-[var(--fail)] border border-[var(--fail)]/30"
+                    : "bg-[#2e2006] text-[var(--partial)] border border-[var(--partial)]/30"
+                }`}>
+                  {r.tier === "catastrophic" ? "blocked" : "risky"}
+                </span>
+                <div className="min-w-0">
+                  <p className="text-xs text-[var(--muted)]">{r.reason}</p>
+                  <p className="font-mono text-xs text-[var(--text)] truncate mt-0.5">{r.command}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* File touches */}
       <div className="rounded border border-[var(--border)] bg-[var(--surface)] p-4">

@@ -56,6 +56,8 @@ class SessionSummary(BaseModel):
     note: str | None
     perceived_quality: int | None
     duration_seconds: int | None
+    risky_count: int
+    catastrophic_count: int
 
 
 class SessionListResponse(BaseModel):
@@ -71,6 +73,7 @@ class SessionListResponse(BaseModel):
 
 class SessionDetail(SessionSummary):
     file_touches: list[FileTouchOut]
+    risky_commands: list[RiskyCommandOut]
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +94,18 @@ class PatchSessionRequest(BaseModel):
     manual_outcome: Literal["success", "partial", "abandoned"] | None = None
     note: str | None = None
     perceived_quality: int | None = None   # 1-5
+
+
+# ---------------------------------------------------------------------------
+# Risky commands
+# ---------------------------------------------------------------------------
+
+class RiskyCommandOut(BaseModel):
+    id: int
+    command: str
+    tier: str       # 'catastrophic' | 'risky'
+    reason: str
+    flagged_at: int
 
 
 # ---------------------------------------------------------------------------

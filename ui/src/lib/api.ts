@@ -16,6 +16,14 @@ export interface FileTouch {
   is_hot: boolean;
 }
 
+export interface RiskyCommand {
+  id: number;
+  command: string;
+  tier: "catastrophic" | "risky";
+  reason: string;
+  flagged_at: number;
+}
+
 export interface SessionSummary {
   id: string;
   started_at: number;
@@ -42,10 +50,13 @@ export interface SessionSummary {
   note: string | null;
   perceived_quality: number | null;
   duration_seconds: number | null;
+  risky_count: number;
+  catastrophic_count: number;
 }
 
 export interface SessionDetail extends SessionSummary {
   file_touches: FileTouch[];
+  risky_commands: RiskyCommand[];
 }
 
 export interface SessionListResponse {
