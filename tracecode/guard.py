@@ -102,6 +102,19 @@ def _classify(command: str) -> tuple[str, str] | None:
     return None
 
 
+def _current_session_id() -> str:
+    """
+    Read the session ID written by the wrapper to ~/.tracecode/current_session.
+    Returns empty string if no session is active (guard fired outside a wrapper).
+    """
+    try:
+        from pathlib import Path
+        f = Path.home() / ".tracecode" / "current_session"
+        return f.read_text().strip() if f.exists() else ""
+    except OSError:
+        return ""
+
+
 def _log_to_db(session_id: str, command: str, tier: str, reason: str) -> None:
     """
     Write to risky_commands table. Silent on any failure — never block
@@ -135,7 +148,7 @@ def run() -> None:
 
     tool_input = event.get("tool_input", {})
     command = tool_input.get("command", "")
-    session_id = event.get("session_id", "")
+    session_id = _current_session_id()
 
     if not command:
         sys.exit(0)

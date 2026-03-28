@@ -157,6 +157,9 @@ fi
 step "Initializing Tracecode..."
 "$VENV_TRACECODE" init
 
+step "Installing guard hook..."
+"$VENV_TRACECODE" install-guard
+
 # ---------------------------------------------------------------------------
 # Write the wrapper script
 # ---------------------------------------------------------------------------
@@ -204,6 +207,9 @@ PROJECT_NAME=\$(basename "\$PROJECT_PATH")
 SHORT_ID=\${SESSION_ID:0:8}
 echo -e "\033[2m tracecode › recording \$SHORT_ID · \$PROJECT_NAME\033[0m" >&2
 
+# Publish session ID so the guard hook can link flagged commands to this session
+echo "\$SESSION_ID" > "\$HOME/.tracecode/current_session"
+
 # Start filesystem watcher (Day 3+)
 "\$TRACECODE" watch \
     --session-id "\$SESSION_ID" \
@@ -214,6 +220,9 @@ echo "\$!" > "\$HOME/.tracecode/watcher_\${SESSION_ID}.pid"
 # Run real claude — not exec'd so post-session hooks run after it exits
 "\$REAL_CLAUDE" "\$@"
 CLAUDE_EXIT=\$?
+
+# Clear current session so guard doesn't attach to a stale session
+rm -f "\$HOME/.tracecode/current_session"
 
 # Post-session pipeline
 "\$TRACECODE" session-end \
