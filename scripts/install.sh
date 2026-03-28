@@ -199,6 +199,11 @@ SESSION_ID=\$("\$TRACECODE" session-start \
     exec "\$REAL_CLAUDE" "\$@"
 }
 
+# Notify user that recording has started
+PROJECT_NAME=\$(basename "\$PROJECT_PATH")
+SHORT_ID=\${SESSION_ID:0:8}
+echo -e "\033[2m tracecode › recording \$SHORT_ID · \$PROJECT_NAME\033[0m" >&2
+
 # Start filesystem watcher (Day 3+)
 "\$TRACECODE" watch \
     --session-id "\$SESSION_ID" \
