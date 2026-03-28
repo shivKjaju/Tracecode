@@ -128,6 +128,29 @@ fi
 echo "  tracecode $("$VENV_TRACECODE" --version | awk '{print $NF}') installed"
 
 # ---------------------------------------------------------------------------
+# Build the Next.js UI
+# ---------------------------------------------------------------------------
+
+step "Building UI..."
+
+if [[ -n "$REPO_ROOT" && -d "$REPO_ROOT/ui" ]]; then
+    if command -v npm &>/dev/null; then
+        echo "  npm $(npm --version)"
+        echo "  Installing UI dependencies..."
+        npm install --prefix "$REPO_ROOT/ui" --silent
+        echo "  Building static export..."
+        npm run build --prefix "$REPO_ROOT/ui" --silent
+        echo "  UI built at $REPO_ROOT/ui/out"
+    else
+        yellow "  npm not found — skipping UI build."
+        yellow "  Install Node.js, then run: cd ui && npm install && npm run build"
+        yellow "  Without the UI build, 'tracecode serve' will show a fallback message."
+    fi
+else
+    yellow "  ui/ directory not found — skipping UI build."
+fi
+
+# ---------------------------------------------------------------------------
 # Initialize ~/.tracecode (config + DB)
 # ---------------------------------------------------------------------------
 
@@ -254,5 +277,7 @@ echo "  Then just use claude normally:"
 echo "    cd your-project"
 echo "    claude"
 echo
-echo "  Sessions are captured automatically. No other steps needed."
+echo "  Sessions are captured automatically. View them at any time:"
+echo "    tracecode serve"
+echo "    open http://localhost:7842"
 echo
