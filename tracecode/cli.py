@@ -73,15 +73,6 @@ def cmd_init() -> None:
 
     click.echo()
     click.echo("Tracecode initialized.")
-    click.echo()
-    click.echo("Next steps:")
-    click.echo("  1. Install the wrapper script (Day 2 task):")
-    click.echo("       cp scripts/claude.wrapper.sh ~/.tracecode/bin/claude")
-    click.echo("       chmod +x ~/.tracecode/bin/claude")
-    click.echo("  2. Add the wrapper to your PATH:")
-    click.echo('       export PATH="$HOME/.tracecode/bin:$PATH"')
-    click.echo("       (Add that line to your ~/.zshrc or ~/.bashrc)")
-    click.echo("  3. Start a Claude Code session and it will be captured automatically.")
 
 
 # ---------------------------------------------------------------------------
