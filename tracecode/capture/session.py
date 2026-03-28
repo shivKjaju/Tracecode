@@ -62,9 +62,14 @@ def end_session(
     session_id: str,
     exit_code: int,
     config: Config,
+    project_path: str | None = None,
+    git_commit_before: str | None = None,
 ) -> None:
     """
     Mark a session as ended and run the post-session analysis pipeline.
+
+    project_path and git_commit_before are needed for git analysis (Step 4+).
+    If not provided they are read back from the DB row created at session start.
 
     Steps run in order — each step is wrapped in its own try/except so a
     failure in one step never prevents the remaining steps from running.
@@ -74,6 +79,19 @@ def end_session(
     now = int(time.time())
     with get_conn(config.db_path) as conn:
         update_session(conn, session_id, ended_at=now, claude_exit_code=exit_code)
+
+    # Resolve project_path and git_commit_before from DB if not supplied by caller
+    if not project_path or not git_commit_before:
+        try:
+            from tracecode.db import get_session
+            with get_conn(config.db_path) as conn:
+                row = get_session(conn, session_id)
+            if row:
+                project_path = project_path or row.get("project_path") or ""
+                git_commit_before = git_commit_before or row.get("git_commit_before") or ""
+        except Exception:
+            project_path = project_path or ""
+            git_commit_before = git_commit_before or ""
 
     # Step 2: Kill the watcher subprocess
     try:
@@ -92,7 +110,45 @@ def end_session(
     except Exception as exc:
         logger.warning("Failed to aggregate watch file for session %s: %s", session_id, exc)
 
-    # Steps 4–5 (Days 4–5): git analysis, test detection, scoring
+    # Step 4: Git analysis
+    try:
+        from tracecode.capture.git import (
+            get_commits_since,
+            get_head_sha,
+            is_git_repo,
+            is_tree_dirty,
+        )
+        if is_git_repo(project_path):
+            git_commit_after = get_head_sha(project_path)
+            commits_during = get_commits_since(project_path, git_commit_before)
+            tree_dirty = is_tree_dirty(project_path)
+            with get_conn(config.db_path) as conn:
+                update_session(
+                    conn, session_id,
+                    git_commit_after=git_commit_after,
+                    commits_during=commits_during,
+                    tree_dirty=1 if tree_dirty else 0,
+                )
+    except Exception as exc:
+        logger.warning("Git analysis failed for session %s: %s", session_id, exc)
+        git_commit_after = None
+
+    # Step 5: Persistence rate
+    try:
+        from tracecode.analysis.persistence import compute_persistence
+        with get_conn(config.db_path) as conn:
+            rate, reliable = compute_persistence(
+                session_id, project_path, git_commit_before, conn
+            )
+            update_session(
+                conn, session_id,
+                persistence_rate=rate,
+                persistence_reliable=1 if reliable else 0,
+            )
+    except Exception as exc:
+        logger.warning("Persistence calculation failed for session %s: %s", session_id, exc)
+
+    # Step 6 (Day 5): test detection and scoring
 
 
 def _kill_watcher(session_id: str, config: Config) -> None:

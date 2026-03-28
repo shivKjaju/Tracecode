@@ -1,8 +1,7 @@
 """
-tests/test_git.py — Tests for capture/git.py
+tests/test_git.py — Tests for capture/git.py (is_git_repo, get_branch, get_head_sha, get_project_root)
 
-Uses temporary directories and real git commands.
-Tests cover both happy paths and expected failure cases (non-git dirs, empty repos).
+Fixtures (git_repo, empty_git_repo, plain_dir) come from tests/conftest.py.
 """
 
 import subprocess
@@ -11,49 +10,6 @@ from pathlib import Path
 import pytest
 
 from tracecode.capture.git import get_branch, get_head_sha, get_project_root, is_git_repo
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture
-def git_repo(tmp_path: Path) -> Path:
-    """
-    Create a minimal git repo with one commit.
-    Returns the repo root path.
-    """
-    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.email", "test@example.com"],
-        check=True, capture_output=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.name", "Test User"],
-        check=True, capture_output=True,
-    )
-    # Create an initial commit so HEAD exists
-    (tmp_path / "README.md").write_text("# test")
-    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "commit", "-m", "init"],
-        check=True, capture_output=True,
-    )
-    return tmp_path
-
-
-@pytest.fixture
-def empty_git_repo(tmp_path: Path) -> Path:
-    """Git repo with no commits yet (HEAD does not exist)."""
-    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
-    return tmp_path
-
-
-@pytest.fixture
-def plain_dir(tmp_path: Path) -> Path:
-    """A plain directory with no git repo."""
-    (tmp_path / "somefile.txt").write_text("hello")
-    return tmp_path
 
 
 # ---------------------------------------------------------------------------

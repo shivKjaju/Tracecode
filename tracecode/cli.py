@@ -135,6 +135,8 @@ def cmd_session_end(
             session_id=session_id,
             exit_code=exit_code,
             config=config,
+            project_path=project or None,
+            git_commit_before=commit_before or None,
         )
         click.echo(f"tracecode: session {session_id[:8]} recorded.", err=True)
     except Exception as exc:
