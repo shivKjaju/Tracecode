@@ -157,9 +157,9 @@ def cmd_watch(session_id: str, path: str) -> None:
     Writes file change events to ~/.tracecode/watch_<session_id>.jsonl.
     Runs until it receives SIGTERM.
     """
-    # Stub: will be implemented in Day 3 (capture/watcher.py)
-    click.echo("watch: not yet implemented", err=True)
-    sys.exit(1)
+    from tracecode.capture.watcher import run_watcher
+    config = load_config(DEFAULT_CONFIG_PATH)
+    run_watcher(session_id, path, config.tracecode_dir)
 
 
 # ---------------------------------------------------------------------------

@@ -34,3 +34,6 @@ dev-dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: integration tests that start real OS processes (deselect with -m 'not slow')",
+]

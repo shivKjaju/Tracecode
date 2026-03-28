@@ -56,6 +56,11 @@ class Config:
     # Each value is a dict that may contain: test_command, test_timeout
     project_overrides: dict[str, dict] = field(default_factory=dict)
 
+    @property
+    def tracecode_dir(self) -> Path:
+        """The ~/.tracecode directory — parent of the database file."""
+        return self.db_path.parent
+
     def get_test_command(self, project_path: str | Path) -> str | None:
         """
         Return the test command for a given project path.
