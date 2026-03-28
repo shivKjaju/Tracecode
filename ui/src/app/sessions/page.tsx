@@ -33,6 +33,7 @@ function SessionDetailInner() {
   const [note, setNote] = useState("");
   const [perceivedQuality, setPerceivedQuality] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -79,6 +80,8 @@ function SessionDetailInner() {
         perceived_quality: perceivedQuality,
       });
       setSession(updated);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -324,13 +327,20 @@ function SessionDetailInner() {
                 />
               </div>
 
-              <button
-                onClick={saveManual}
-                disabled={saving}
-                className="px-4 py-1.5 rounded bg-[var(--accent)] text-[var(--bg)] text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
-              >
-                {saving ? "Saving…" : "Save"}
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={saveManual}
+                  disabled={saving}
+                  className="px-4 py-1.5 rounded bg-[var(--accent)] text-[var(--bg)] text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+                >
+                  {saving ? "Saving…" : "Save"}
+                </button>
+                {saved && (
+                  <span className="text-sm text-[var(--success)] transition-opacity">
+                    ✓ Saved
+                  </span>
+                )}
+              </div>
               {error && <p className="text-xs text-[var(--fail)]">{error}</p>}
             </div>
           </div>
@@ -352,33 +362,48 @@ function SessionDetailInner() {
 
       {/* Git diff */}
       <div className="rounded border border-[var(--border)] bg-[var(--surface)] p-4">
-        <div className="flex items-center justify-between mb-3">
-          <p className="text-xs text-[var(--muted)] uppercase tracking-wider">
-            Net Diff
-          </p>
+        <div className="flex items-start justify-between mb-1">
+          <div>
+            <p className="text-xs text-[var(--muted)] uppercase tracking-wider">
+              Net Diff
+            </p>
+            <p className="text-xs text-[var(--muted)] mt-0.5 normal-case">
+              All code changes from session start → end
+              {session.git_commit_before && (
+                <span className="font-mono ml-1 opacity-60">
+                  ({shortSha(session.git_commit_before)} → {shortSha(session.git_commit_after) || "HEAD"})
+                </span>
+              )}
+            </p>
+          </div>
           {!showDiff && (
             <button
               onClick={handleShowDiff}
-              className="text-xs text-[var(--accent)] hover:underline"
+              className="text-xs text-[var(--accent)] hover:underline shrink-0 mt-0.5"
             >
-              Load diff
+              Show diff
             </button>
           )}
         </div>
-        {showDiff &&
-          (diffLoading ? (
-            <p className="text-sm text-[var(--muted)]">Loading diff…</p>
-          ) : diff ? (
-            diff.available ? (
-              <div className="rounded bg-[var(--bg)] border border-[var(--border)] p-3 max-h-96 overflow-y-auto">
-                <DiffViewer diff={diff.diff} />
-              </div>
-            ) : (
-              <p className="text-sm text-[var(--muted)] italic">
-                Diff unavailable (no git history or start SHA).
-              </p>
-            )
-          ) : null)}
+        {showDiff && (
+          <div className="mt-3">
+            {diffLoading ? (
+              <p className="text-sm text-[var(--muted)]">Loading…</p>
+            ) : diff ? (
+              diff.available && diff.diff.trim() ? (
+                <div className="rounded bg-[var(--bg)] border border-[var(--border)] p-3 max-h-96 overflow-y-auto">
+                  <DiffViewer diff={diff.diff} />
+                </div>
+              ) : (
+                <p className="text-sm text-[var(--muted)] italic">
+                  {!diff.available
+                    ? "Not available — session was not in a git repo or start SHA was not captured."
+                    : "No code changes detected in this session."}
+                </p>
+              )
+            ) : null}
+          </div>
+        )}
       </div>
     </div>
   );
