@@ -12,13 +12,15 @@ Output format (one JSON object per line):
     {"path": "src/auth.py", "ts": 1711234567890}
     {"path": "tests/test_auth.py", "ts": 1711234568012}
 
-Deliberately simple: no deduplication, no batching, no real-time analysis.
 Aggregation happens once, post-session, in session.py.
+At aggregation time, files matched by .gitignore or a transient-file filter
+are excluded from all metrics and counted separately as ignored_touches.
 """
 
 import json
 import os
 import signal
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -28,22 +30,52 @@ from watchdog.observers import Observer
 
 
 # ---------------------------------------------------------------------------
-# Ignore lists — applied at any directory depth
+# Ignore lists — applied at watch time (obvious noise only)
 # ---------------------------------------------------------------------------
 
 IGNORE_DIRS: frozenset[str] = frozenset({
     ".git", "node_modules", "__pycache__", ".next", "dist",
     "build", "target", ".venv", "venv", ".pytest_cache",
-    ".mypy_cache", "coverage", ".turbo", ".idea", ".vscode",
+    ".mypy_cache", ".ruff_cache", "coverage", ".turbo",
+    ".idea", ".vscode", ".eggs", "htmlcov", ".tox",
 })
 
 IGNORE_EXTENSIONS: frozenset[str] = frozenset({
-    ".pyc", ".pyo", ".swp", ".swo", ".lock", ".orig", ".bak",
+    # Python bytecode
+    ".pyc", ".pyo", ".pyd",
+    # Editor swap / backup
+    ".swp", ".swo", ".orig", ".bak",
+    # macOS
+    ".DS_Store",
+    # Compiled objects
+    ".o", ".so", ".dylib", ".class",
+    # Source maps
+    ".map",
 })
 
-# Exact filenames to ignore (these are names, not extensions)
 IGNORE_NAMES: frozenset[str] = frozenset({
     ".DS_Store",
+    "Thumbs.db",
+})
+
+# Extensions filtered at aggregation time (in addition to IGNORE_EXTENSIONS).
+# These are lock / generated files that are real edits but not meaningful signal.
+_AGGREGATION_IGNORE_EXTENSIONS: frozenset[str] = frozenset({
+    ".lock",           # package-lock.json, Pipfile.lock, poetry.lock
+    ".d.ts",           # generated TypeScript declarations
+    ".min.js",         # minified JS
+    ".min.css",        # minified CSS
+})
+
+_AGGREGATION_IGNORE_NAMES: frozenset[str] = frozenset({
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "Pipfile.lock",
+    "poetry.lock",
+    "Cargo.lock",
+    "go.sum",
+    "composer.lock",
 })
 
 
@@ -52,17 +84,10 @@ IGNORE_NAMES: frozenset[str] = frozenset({
 # ---------------------------------------------------------------------------
 
 class FileChangeHandler(FileSystemEventHandler):
-    """
-    Writes a JSON record to the output file for every relevant file change.
-    Ignores directories, ignored dir names, and ignored extensions.
-    """
-
     def __init__(self, project_path: str, output_file) -> None:
         self.project_path = str(Path(project_path).resolve())
         self.output_file = output_file
 
-    # watchdog fires on_modified for edits and on_created for new files.
-    # on_moved covers Save As / atomic saves (many editors write to a temp file then rename).
     def on_modified(self, event: FileSystemEvent) -> None:
         if not event.is_directory:
             self._record(event.src_path)
@@ -72,47 +97,33 @@ class FileChangeHandler(FileSystemEventHandler):
             self._record(event.src_path)
 
     def on_moved(self, event: FileSystemEvent) -> None:
-        # Record the destination — that's the file that now exists
         if not event.is_directory:
             self._record(event.dest_path)
 
     def _record(self, abs_path: str) -> None:
         if self._should_ignore(abs_path):
             return
-
         try:
             rel_path = os.path.relpath(abs_path, self.project_path)
         except ValueError:
-            # Can happen on Windows with different drives; skip
             return
-
-        # Normalise to forward slashes so paths are consistent cross-platform
         rel_path = rel_path.replace(os.sep, "/")
-
         record = {"path": rel_path, "ts": int(time.time() * 1000)}
         try:
             self.output_file.write(json.dumps(record) + "\n")
             self.output_file.flush()
         except OSError:
-            pass  # output file closed — watcher is shutting down
+            pass
 
     def _should_ignore(self, abs_path: str) -> bool:
-        """Return True if this path should be skipped."""
         path = Path(abs_path)
-
-        # Check every path component against the ignore dir list
         for part in path.parts:
             if part in IGNORE_DIRS:
                 return True
-
-        # Check exact filename (e.g. .DS_Store)
         if path.name in IGNORE_NAMES:
             return True
-
-        # Check file extension
         if path.suffix.lower() in IGNORE_EXTENSIONS:
             return True
-
         return False
 
 
@@ -121,16 +132,8 @@ class FileChangeHandler(FileSystemEventHandler):
 # ---------------------------------------------------------------------------
 
 def run_watcher(session_id: str, project_path: str, tracecode_dir: Path) -> None:
-    """
-    Start watching project_path and write events to a JSONL file.
-    Blocks until SIGTERM or SIGINT is received.
-
-    Called by `tracecode watch` CLI command.
-    The wrapper script sends SIGTERM when the claude session ends.
-    """
     output_path = tracecode_dir / f"watch_{session_id}.jsonl"
     project_path = str(Path(project_path).resolve())
-
     stop_event = threading.Event()
 
     def _handle_signal(signum, frame):
@@ -139,19 +142,53 @@ def run_watcher(session_id: str, project_path: str, tracecode_dir: Path) -> None
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
 
-    with open(output_path, "a", buffering=1) as output_file:  # line-buffered
+    with open(output_path, "a", buffering=1) as output_file:
         handler = FileChangeHandler(project_path, output_file)
         observer = Observer()
         observer.schedule(handler, project_path, recursive=True)
         observer.start()
-
         try:
-            # Block until a signal tells us to stop
             stop_event.wait()
         finally:
             observer.stop()
             observer.join(timeout=3)
-            # output_file is flushed and closed by the context manager
+
+
+# ---------------------------------------------------------------------------
+# Git-ignore filtering
+# ---------------------------------------------------------------------------
+
+def _get_gitignored_paths(paths: list[str], project_path: str) -> frozenset[str]:
+    """
+    Return the subset of relative paths that git considers ignored.
+    Falls back to empty set on any error (non-git repo, git not installed, etc.).
+    """
+    if not paths:
+        return frozenset()
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "--stdin"],
+            input="\n".join(paths),
+            capture_output=True,
+            text=True,
+            cwd=project_path,
+            timeout=5,
+        )
+        return frozenset(result.stdout.strip().splitlines())
+    except Exception:
+        return frozenset()
+
+
+def _is_transient(rel_path: str) -> bool:
+    """Return True if the file is a lock file or generated artifact."""
+    p = Path(rel_path)
+    if p.name in _AGGREGATION_IGNORE_NAMES:
+        return True
+    # Check compound suffixes like .d.ts, .min.js
+    for ext in _AGGREGATION_IGNORE_EXTENSIONS:
+        if rel_path.endswith(ext):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -162,20 +199,21 @@ def aggregate_watch_file(
     session_id: str,
     watch_path: Path,
     conn,
+    project_path: str = "",
 ) -> int:
     """
     Read the JSONL file written by the watcher, aggregate by file path,
-    insert rows into file_touches, and update sessions.files_touched / hot_files.
+    apply gitignore + transient-file filtering, insert rows into file_touches,
+    and update sessions.files_touched / hot_files / ignored_touches.
 
-    Returns the number of distinct files touched (0 if no data).
-    Handles missing or empty files gracefully.
+    Returns the number of distinct non-ignored files touched (0 if no data).
     """
     from tracecode.db import bulk_insert_file_touches, update_session
 
     if not watch_path.exists():
         return 0
 
-    # Parse JSONL — skip malformed lines silently
+    # Parse JSONL
     touches: dict[str, dict] = {}
     try:
         with open(watch_path) as f:
@@ -189,7 +227,6 @@ def aggregate_watch_file(
                     ts: int = record["ts"]
                 except (json.JSONDecodeError, KeyError):
                     continue
-
                 if path not in touches:
                     touches[path] = {"count": 0, "first_ts": ts, "last_ts": ts}
                 touches[path]["count"] += 1
@@ -201,23 +238,39 @@ def aggregate_watch_file(
     if not touches:
         return 0
 
-    # Insert into file_touches table
+    all_paths = list(touches.keys())
+
+    # Apply transient-file filter
+    transient = {p for p in all_paths if _is_transient(p)}
+
+    # Apply gitignore filter (only if we know the project path)
+    gitignored: frozenset[str] = frozenset()
+    if project_path:
+        gitignored = _get_gitignored_paths(all_paths, project_path)
+
+    ignored = transient | gitignored
+    real_paths = [p for p in all_paths if p not in ignored]
+
+    ignored_count = len(ignored)
+
+    # Insert only real (non-ignored) file touches
     rows = [
         {
             "session_id": session_id,
             "file_path": path,
-            "touch_count": data["count"],
-            "first_touch_at": data["first_ts"],
-            "last_touch_at": data["last_ts"],
+            "touch_count": touches[path]["count"],
+            "first_touch_at": touches[path]["first_ts"],
+            "last_touch_at": touches[path]["last_ts"],
         }
-        for path, data in touches.items()
+        for path in real_paths
     ]
-    bulk_insert_file_touches(conn, rows)
+    if rows:
+        bulk_insert_file_touches(conn, rows)
 
-    # Update session-level aggregates
-    hot_files = sum(1 for d in touches.values() if d["count"] >= 3)
+    hot_files = sum(1 for p in real_paths if touches[p]["count"] >= 3)
     update_session(conn, session_id,
-                   files_touched=len(touches),
-                   hot_files=hot_files)
+                   files_touched=len(real_paths),
+                   hot_files=hot_files,
+                   ignored_touches=ignored_count)
 
-    return len(touches)
+    return len(real_paths)

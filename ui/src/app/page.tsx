@@ -3,8 +3,45 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, type SessionSummary } from "@/lib/api";
-import { fmtTime, fmtDuration, pct } from "@/lib/format";
-import { QualityBadge } from "@/components/QualityBadge";
+import { fmtTime, fmtDuration } from "@/lib/format";
+import { VerdictBadge } from "@/components/VerdictBadge";
+
+/** Top anomaly tags shown on the feed row (major only, max 2). */
+function AnomalyTags({ session }: { session: SessionSummary }) {
+  const tags: string[] = [];
+
+  if (session.catastrophic_count > 0)
+    tags.push(`${session.catastrophic_count} command${session.catastrophic_count > 1 ? "s" : ""} blocked`);
+  else if (session.risky_count > 0)
+    tags.push(`${session.risky_count} risky command${session.risky_count > 1 ? "s" : ""}`);
+
+  if (session.sensitive_files_touched) tags.push("config/env files modified");
+
+  // Derive cheap major signals from summary fields
+  if (session.tree_dirty) tags.push("uncommitted changes");
+  if (
+    session.persistence_reliable &&
+    session.persistence_rate != null &&
+    session.persistence_rate < 0.5
+  )
+    tags.push("most edits reverted");
+
+  const shown = tags.slice(0, 2);
+  if (shown.length === 0) return null;
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap mt-0.5">
+      {shown.map((t) => (
+        <span
+          key={t}
+          className="text-xs text-[var(--muted)] opacity-70"
+        >
+          {t}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 export default function FeedPage() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -48,97 +85,52 @@ export default function FeedPage() {
         <div className="text-sm text-[var(--muted)] py-12 text-center">Loading…</div>
       ) : sessions.length === 0 ? (
         <div className="text-sm text-[var(--muted)] py-12 text-center">
-          No sessions recorded yet. Run <code className="font-mono text-[var(--accent)]">claude</code> in any project to get started.
+          No sessions yet. Run{" "}
+          <code className="font-mono text-[var(--accent)]">claude</code> in any
+          project to get started.
         </div>
       ) : (
         <>
           <div className="rounded border border-[var(--border)] overflow-hidden">
-            {/* Header */}
-            <div className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-4 px-4 py-2 bg-[var(--surface)] border-b border-[var(--border)] text-xs text-[var(--muted)]">
-              <span>project / branch</span>
-              <span className="w-20 text-right">duration</span>
-              <span className="w-20 text-right">quality</span>
-              <span className="w-24 text-center">outcome</span>
-              <span className="w-28 text-right">started</span>
-            </div>
-
             {sessions.map((s, i) => (
               <Link
                 key={s.id}
                 href={`/sessions?id=${s.id}`}
-                className={`grid grid-cols-[1fr_auto_auto_auto_auto] gap-4 px-4 py-3 hover:bg-[var(--surface)] transition-colors border-b border-[var(--border)] last:border-0 ${i % 2 === 0 ? "" : "bg-[var(--surface)]/40"}`}
+                className={`flex items-center gap-4 px-4 py-3 hover:bg-[var(--surface)] transition-colors border-b border-[var(--border)] last:border-0 ${
+                  i % 2 === 0 ? "" : "bg-[var(--surface)]/40"
+                }`}
               >
-                {/* Project / branch */}
-                <div className="min-w-0">
+                {/* Verdict pill — primary signal */}
+                <div className="shrink-0">
+                  <VerdictBadge verdict={s.verdict} small />
+                </div>
+
+                {/* Project / anomaly tags */}
+                <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium text-[var(--text)] truncate">
                       {s.project_name}
                     </span>
-                    {s.catastrophic_count > 0 && (
-                      <span className="text-xs px-1.5 py-0.5 rounded bg-[#3a1a1a] text-[var(--fail)] border border-[var(--fail)]/30 shrink-0">
-                        ⛔ {s.catastrophic_count} blocked
-                      </span>
-                    )}
-                    {s.risky_count > 0 && s.catastrophic_count === 0 && (
-                      <span className="text-xs px-1.5 py-0.5 rounded bg-[#2e2006] text-[var(--partial)] border border-[var(--partial)]/30 shrink-0">
-                        ⚠ {s.risky_count} risky
-                      </span>
-                    )}
-                    {s.risky_count > 0 && s.catastrophic_count > 0 && (
-                      <span className="text-xs px-1.5 py-0.5 rounded bg-[#2e2006] text-[var(--partial)] border border-[var(--partial)]/30 shrink-0">
-                        ⚠ {s.risky_count}
+                    {s.git_branch && (
+                      <span className="text-xs text-[var(--muted)] font-mono shrink-0">
+                        {s.git_branch}
                       </span>
                     )}
                   </div>
-                  {s.git_branch && (
-                    <span className="text-xs text-[var(--muted)] font-mono truncate block">
-                      {s.git_branch}
-                    </span>
+                  <AnomalyTags session={s} />
+                </div>
+
+                {/* Duration + time */}
+                <div className="shrink-0 text-right text-xs text-[var(--muted)]">
+                  {s.duration_seconds != null && (
+                    <div>{fmtDuration(s.duration_seconds)}</div>
                   )}
-                </div>
-
-                {/* Duration */}
-                <div className="w-20 text-right text-sm text-[var(--muted)] self-center">
-                  {fmtDuration(s.duration_seconds)}
-                </div>
-
-                {/* Quality score */}
-                <div className="w-20 text-right text-sm font-mono self-center">
-                  {s.quality_score != null ? (
-                    <span
-                      style={{
-                        color:
-                          s.quality_score >= 0.7
-                            ? "var(--success)"
-                            : s.quality_score >= 0.4
-                            ? "var(--partial)"
-                            : "var(--fail)",
-                      }}
-                    >
-                      {pct(s.quality_score)}
-                    </span>
-                  ) : (
-                    <span className="text-[var(--muted)]">—</span>
-                  )}
-                </div>
-
-                {/* Outcome badge */}
-                <div className="w-24 flex items-center justify-center">
-                  <QualityBadge
-                    outcome={s.manual_outcome ?? s.auto_outcome}
-                    small
-                  />
-                </div>
-
-                {/* Timestamp */}
-                <div className="w-28 text-right text-xs text-[var(--muted)] self-center">
-                  {fmtTime(s.started_at)}
+                  <div className="opacity-60">{fmtTime(s.started_at)}</div>
                 </div>
               </Link>
             ))}
           </div>
 
-          {/* Pagination */}
           {total > limit && (
             <div className="flex justify-center gap-3 mt-6">
               <button

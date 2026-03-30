@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- Watcher-derived (populated during session-end)
     files_touched        INTEGER,
     hot_files            INTEGER,        -- files touched >= 3 times
+    ignored_touches      INTEGER,        -- files excluded by gitignore/transient filter
 
     -- Git analysis (populated during session-end)
     commits_during       INTEGER,
@@ -58,6 +59,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     outcome_score        INTEGER,        -- 0-4
     quality_score        REAL,           -- 0.0-1.0
     auto_outcome         TEXT,           -- 'success' | 'partial' | 'incomplete'
+
+    -- Verdict model (populated during session-end)
+    verdict              TEXT,           -- 'trusted'|'trusted_with_caveats'|'review_required'|'high_risk'|'blocked'
+    sensitive_files_touched INTEGER DEFAULT 0,  -- 1 if .env/config/deps/ci files touched
+    diff_lines           INTEGER,        -- total lines added+removed, NULL if unavailable
 
     -- Manual enrichment — never required, always optional
     manual_outcome       TEXT,           -- 'success' | 'partial' | 'abandoned' | NULL
@@ -99,6 +105,7 @@ _MUTABLE_SESSION_COLUMNS = {
     "claude_exit_code",
     "files_touched",
     "hot_files",
+    "ignored_touches",
     "commits_during",
     "tree_dirty",
     "persistence_rate",
@@ -109,6 +116,9 @@ _MUTABLE_SESSION_COLUMNS = {
     "outcome_score",
     "quality_score",
     "auto_outcome",
+    "verdict",
+    "sensitive_files_touched",
+    "diff_lines",
     "manual_outcome",
     "note",
     "perceived_quality",
@@ -118,6 +128,23 @@ _MUTABLE_SESSION_COLUMNS = {
 # ---------------------------------------------------------------------------
 # Initialization
 # ---------------------------------------------------------------------------
+
+_MIGRATIONS = [
+    # Add columns introduced after initial schema
+    "ALTER TABLE sessions ADD COLUMN ignored_touches INTEGER",
+    "ALTER TABLE sessions ADD COLUMN verdict TEXT",
+    "ALTER TABLE sessions ADD COLUMN sensitive_files_touched INTEGER DEFAULT 0",
+    "ALTER TABLE sessions ADD COLUMN diff_lines INTEGER",
+]
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    """Apply additive migrations that are safe to run on existing DBs."""
+    for sql in _MIGRATIONS:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # column already exists — safe to ignore
+
 
 def init_db(db_path: Path) -> None:
     """
@@ -130,8 +157,8 @@ def init_db(db_path: Path) -> None:
 
     conn = sqlite3.connect(db_path)
     try:
-        # executescript commits any pending transaction first, then runs the SQL
         conn.executescript(SCHEMA_SQL)
+        _run_migrations(conn)
         conn.commit()
     finally:
         conn.close()

@@ -2,20 +2,189 @@
 
 /**
  * Session detail page — accessed via /sessions?id=<uuid>
- *
- * Uses query params instead of a dynamic route so the app can be
- * exported as a static site (Next.js output: "export").
  */
 
 import { Suspense, useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { api, type SessionDetail, type DiffResponse } from "@/lib/api";
+import { api, type SessionDetail, type DiffResponse, type Anomaly } from "@/lib/api";
 import { fmtTime, fmtDuration, shortSha, pct, diffStats } from "@/lib/format";
-import { QualityBadge } from "@/components/QualityBadge";
+import { VerdictBadge } from "@/components/VerdictBadge";
 import { FileTouchTable } from "@/components/FileTouchTable";
 import { DiffViewer } from "@/components/DiffViewer";
-import { OutcomeSignalChecklist } from "@/components/OutcomeSignalChecklist";
+
+// ---------------------------------------------------------------------------
+// Verdict banner
+// ---------------------------------------------------------------------------
+
+const VERDICT_SUMMARY: Record<string, string> = {
+  trusted:              "No anomalies detected.",
+  trusted_with_caveats: "Mostly clean with minor cautions.",
+  review_required:      "This session has issues that need your attention.",
+  high_risk:            "Multiple serious issues require review before accepting changes.",
+  blocked:              "A dangerous command was intercepted.",
+};
+
+const VERDICT_BORDER: Record<string, string> = {
+  trusted:              "border-[var(--success)]/30 bg-[#1c3a28]/40",
+  trusted_with_caveats: "border-[#d4b84a]/30 bg-[#2e2c06]/40",
+  review_required:      "border-[#e08030]/30 bg-[#2e1a06]/40",
+  high_risk:            "border-[var(--fail)]/40 bg-[#3a1a1a]/50",
+  blocked:              "border-[var(--fail)]/60 bg-[#3a1a1a]/70",
+};
+
+function VerdictBanner({ verdict, anomalies, riskyCount, catastrophicCount }: {
+  verdict: string | null | undefined;
+  anomalies: Anomaly[];
+  riskyCount: number;
+  catastrophicCount: number;
+}) {
+  if (!verdict) return null;
+
+  const summary = VERDICT_SUMMARY[verdict] ?? "";
+  const border  = VERDICT_BORDER[verdict] ?? "border-[var(--border)] bg-[var(--surface)]";
+
+  // Why list: top major anomalies first, then risky commands, then minor, max 5 items
+  const whyItems: string[] = [];
+  if (catastrophicCount > 0)
+    whyItems.push(`${catastrophicCount} dangerous command${catastrophicCount > 1 ? "s were" : " was"} blocked`);
+  if (riskyCount > 0)
+    whyItems.push(`${riskyCount} risky command${riskyCount > 1 ? "s" : ""} used`);
+  for (const a of anomalies) {
+    if (whyItems.length >= 5) break;
+    if (a.severity === "major" || a.severity === "minor") whyItems.push(a.label);
+  }
+
+  return (
+    <div className={`rounded border p-4 ${border}`}>
+      <div className="flex items-center gap-3 mb-2">
+        <VerdictBadge verdict={verdict} />
+        <p className="text-sm text-[var(--muted)]">{summary}</p>
+      </div>
+      {whyItems.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {whyItems.map((item) => (
+            <li key={item} className="flex items-start gap-2 text-sm text-[var(--text)]">
+              <span className="mt-0.5 shrink-0 text-[var(--muted)]">·</span>
+              {item}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Anomaly list
+// ---------------------------------------------------------------------------
+
+const SEVERITY_ICON: Record<string, string> = {
+  major:   "⚠",
+  minor:   "›",
+  caution: "·",
+};
+
+const SEVERITY_COLOR: Record<string, string> = {
+  major:   "text-[var(--fail)]",
+  minor:   "text-[var(--partial)]",
+  caution: "text-[var(--muted)]",
+};
+
+function AnomalyList({ anomalies, session }: {
+  anomalies: Anomaly[];
+  session: SessionDetail;
+}) {
+  // Positive signals shown as green checkmarks alongside anomalies
+  const positives: { label: string; show: boolean }[] = [
+    { label: "Code committed",      show: (session.commits_during ?? 0) > 0 },
+    { label: "Clean tree at end",   show: !session.tree_dirty && session.tree_dirty != null },
+    { label: "Tests passed",        show: session.test_outcome === "pass" },
+    { label: "Files survived to git", show:
+        !!session.persistence_reliable &&
+        session.persistence_rate != null &&
+        session.persistence_rate >= 0.7 },
+  ];
+
+  const hasContent = anomalies.length > 0 || positives.some((p) => p.show);
+  if (!hasContent) return null;
+
+  return (
+    <div className="rounded border border-[var(--border)] bg-[var(--surface)] p-4">
+      <p className="text-xs text-[var(--muted)] uppercase tracking-wider mb-3">
+        Anomalies
+      </p>
+      <div className="space-y-2">
+        {anomalies.map((a) => (
+          <div key={a.id} className="flex items-start gap-2.5">
+            <span className={`shrink-0 mt-0.5 font-mono text-sm w-4 ${SEVERITY_COLOR[a.severity]}`}>
+              {SEVERITY_ICON[a.severity]}
+            </span>
+            <div className="min-w-0">
+              <p className={`text-sm font-medium ${
+                a.severity === "major"
+                  ? "text-[var(--text)]"
+                  : a.severity === "minor"
+                  ? "text-[var(--text)]"
+                  : "text-[var(--muted)]"
+              }`}>
+                {a.label}
+              </p>
+              <p className="text-xs text-[var(--muted)] mt-0.5">{a.detail}</p>
+            </div>
+          </div>
+        ))}
+
+        {positives.filter((p) => p.show).map((p) => (
+          <div key={p.label} className="flex items-center gap-2.5">
+            <span className="shrink-0 font-mono text-sm w-4 text-[var(--success)]">✓</span>
+            <p className="text-sm text-[var(--muted)]">{p.label}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Risky commands (inline in anomaly area)
+// ---------------------------------------------------------------------------
+
+function RiskyCommandsSection({ session }: { session: SessionDetail }) {
+  if (session.risky_commands.length === 0) return null;
+  return (
+    <div className="rounded border border-[var(--partial)]/40 bg-[#2e2006]/40 p-4">
+      <p className="text-xs text-[var(--partial)] uppercase tracking-wider mb-3">
+        Flagged Commands ({session.risky_commands.length})
+      </p>
+      <div className="space-y-2">
+        {session.risky_commands.map((r) => (
+          <div key={r.id} className="flex items-start gap-3">
+            <span
+              className={`text-xs px-1.5 py-0.5 rounded shrink-0 mt-0.5 ${
+                r.tier === "catastrophic"
+                  ? "bg-[#3a1a1a] text-[var(--fail)] border border-[var(--fail)]/30"
+                  : "bg-[#2e2006] text-[var(--partial)] border border-[var(--partial)]/30"
+              }`}
+            >
+              {r.tier === "catastrophic" ? "blocked" : "risky"}
+            </span>
+            <div className="min-w-0">
+              <p className="text-xs text-[var(--muted)]">{r.reason}</p>
+              <p className="font-mono text-xs text-[var(--text)] truncate mt-0.5">
+                {r.command}
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Detail page
+// ---------------------------------------------------------------------------
 
 function SessionDetailInner() {
   const params = useSearchParams();
@@ -72,10 +241,7 @@ function SessionDetailInner() {
     try {
       const updated = await api.patchSession(id, {
         manual_outcome: (manualOutcome || null) as
-          | "success"
-          | "partial"
-          | "abandoned"
-          | null,
+          | "success" | "partial" | "abandoned" | null,
         note: note || null,
         perceived_quality: perceivedQuality,
       });
@@ -93,19 +259,13 @@ function SessionDetailInner() {
     return (
       <p className="text-sm text-[var(--muted)]">
         No session ID provided.{" "}
-        <Link href="/" className="text-[var(--accent)]">
-          Back to sessions
-        </Link>
+        <Link href="/" className="text-[var(--accent)]">Back to sessions</Link>
       </p>
     );
   }
 
   if (loading) {
-    return (
-      <div className="text-sm text-[var(--muted)] py-12 text-center">
-        Loading…
-      </div>
-    );
+    return <div className="text-sm text-[var(--muted)] py-12 text-center">Loading…</div>;
   }
 
   if (error && !session) {
@@ -118,137 +278,57 @@ function SessionDetailInner() {
 
   if (!session) return null;
 
-  const effectiveOutcome = session.manual_outcome ?? session.auto_outcome;
+  const anomalies = session.anomalies ?? [];
 
   return (
     <div className="space-y-6">
       {/* Breadcrumb */}
       <div className="flex items-center gap-2 text-sm text-[var(--muted)]">
-        <Link href="/" className="hover:text-[var(--accent)] transition-colors">
-          Sessions
-        </Link>
+        <Link href="/" className="hover:text-[var(--accent)] transition-colors">Sessions</Link>
         <span>/</span>
         <span className="font-mono text-xs">{id.slice(0, 8)}</span>
       </div>
 
       {/* Header */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-semibold text-[var(--text)]">
-            {session.project_name}
-          </h1>
-          <div className="flex items-center gap-3 mt-1 text-sm text-[var(--muted)]">
-            {session.git_branch && (
-              <span className="font-mono">{session.git_branch}</span>
-            )}
-            <span>{fmtTime(session.started_at)}</span>
-            {session.duration_seconds != null && (
-              <span>{fmtDuration(session.duration_seconds)}</span>
-            )}
-          </div>
+      <div>
+        <h1 className="text-xl font-semibold text-[var(--text)]">{session.project_name}</h1>
+        <div className="flex items-center gap-3 mt-1 text-sm text-[var(--muted)]">
+          {session.git_branch && <span className="font-mono">{session.git_branch}</span>}
+          <span>{fmtTime(session.started_at)}</span>
+          {session.duration_seconds != null && <span>{fmtDuration(session.duration_seconds)}</span>}
         </div>
-        <QualityBadge outcome={effectiveOutcome} />
       </div>
 
-      {/* 1. What Claude touched */}
-      <div className="rounded border border-[var(--border)] bg-[var(--surface)] p-4">
-        <p className="text-xs text-[var(--muted)] uppercase tracking-wider mb-3">
-          Files Touched
-          {session.file_touches.length > 0 && (
-            <span className="ml-2 normal-case text-[var(--text)]">
-              ({session.file_touches.length} files
-              {session.ignored_touches ? `, ${session.ignored_touches} ignored` : ""})
-            </span>
+      {/* 1. Verdict banner */}
+      <VerdictBanner
+        verdict={session.verdict}
+        anomalies={anomalies}
+        riskyCount={session.risky_count}
+        catastrophicCount={session.catastrophic_count}
+      />
+
+      {/* 2. Anomalies */}
+      {(anomalies.length > 0 || session.risky_commands.length > 0) && (
+        <div className="space-y-3">
+          {session.risky_commands.length > 0 && (
+            <RiskyCommandsSection session={session} />
           )}
-        </p>
-        <FileTouchTable touches={session.file_touches} />
-      </div>
-
-      {/* 2. What survived — persistence summary */}
-      {session.persistence_rate != null && (
-        <div className="rounded border border-[var(--border)] bg-[var(--surface)] p-4">
-          <p className="text-xs text-[var(--muted)] uppercase tracking-wider mb-3">
-            Persistence
-          </p>
-          <div className="flex items-center gap-6">
-            <div>
-              <p className="text-2xl font-mono font-semibold text-[var(--text)]">
-                {pct(session.persistence_rate)}
-              </p>
-              <p className="text-xs text-[var(--muted)] mt-0.5">
-                of touched files survived to git
-                {!session.persistence_reliable && (
-                  <span className="ml-1 opacity-60">(estimate)</span>
-                )}
-              </p>
-            </div>
-            {session.hot_files != null && session.hot_files > 0 && (
-              <div>
-                <p className="text-2xl font-mono font-semibold text-[var(--partial)]">
-                  {session.hot_files}
-                </p>
-                <p className="text-xs text-[var(--muted)] mt-0.5">
-                  hot files (touched 3×+)
-                </p>
-              </div>
-            )}
-          </div>
+          <AnomalyList anomalies={anomalies} session={session} />
         </div>
       )}
 
-      {/* 3. Outcome signals checklist */}
-      {session.outcome_signals.length > 0 && (
-        <div className="rounded border border-[var(--border)] bg-[var(--surface)] p-4">
-          <p className="text-xs text-[var(--muted)] uppercase tracking-wider mb-3">
-            Outcome Signals
-          </p>
-          <OutcomeSignalChecklist signals={session.outcome_signals} />
-        </div>
-      )}
-
-      {/* 4. Risky commands */}
-      {session.risky_commands.length > 0 && (
-        <div className="rounded border border-[var(--partial)]/40 bg-[#2e2006]/40 p-4">
-          <p className="text-xs text-[var(--partial)] uppercase tracking-wider mb-3">
-            Flagged Commands ({session.risky_commands.length})
-          </p>
-          <div className="space-y-2">
-            {session.risky_commands.map((r) => (
-              <div key={r.id} className="flex items-start gap-3">
-                <span
-                  className={`text-xs px-1.5 py-0.5 rounded shrink-0 mt-0.5 ${
-                    r.tier === "catastrophic"
-                      ? "bg-[#3a1a1a] text-[var(--fail)] border border-[var(--fail)]/30"
-                      : "bg-[#2e2006] text-[var(--partial)] border border-[var(--partial)]/30"
-                  }`}
-                >
-                  {r.tier === "catastrophic" ? "blocked" : "risky"}
-                </span>
-                <div className="min-w-0">
-                  <p className="text-xs text-[var(--muted)]">{r.reason}</p>
-                  <p className="font-mono text-xs text-[var(--text)] truncate mt-0.5">
-                    {r.command}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 5. Git diff */}
+      {/* 3. What changed — diff (collapsed by default, shows line count hint) */}
       <div className="rounded border border-[var(--border)] bg-[var(--surface)] p-4">
         <div className="flex items-start justify-between mb-1">
           <div>
             <p className="text-xs text-[var(--muted)] uppercase tracking-wider">
-              Net Diff
+              What changed
             </p>
             <p className="text-xs text-[var(--muted)] mt-0.5 normal-case">
               All code changes from session start → end
               {session.git_commit_before && (
                 <span className="font-mono ml-1 opacity-60">
-                  ({shortSha(session.git_commit_before)} →{" "}
-                  {shortSha(session.git_commit_after) || "HEAD"})
+                  ({shortSha(session.git_commit_before)} → {shortSha(session.git_commit_after) || "HEAD"})
                 </span>
               )}
             </p>
@@ -273,15 +353,9 @@ function SessionDetailInner() {
                     const { added, removed, files } = diffStats(diff.diff);
                     return (
                       <div className="flex gap-4 mb-2 text-sm font-mono">
-                        <span className="text-[var(--success)]">
-                          +{added} lines
-                        </span>
-                        <span className="text-[var(--fail)]">
-                          −{removed} lines
-                        </span>
-                        <span className="text-[var(--muted)]">
-                          {files} file{files !== 1 ? "s" : ""}
-                        </span>
+                        <span className="text-[var(--success)]">+{added} lines</span>
+                        <span className="text-[var(--fail)]">−{removed} lines</span>
+                        <span className="text-[var(--muted)]">{files} file{files !== 1 ? "s" : ""}</span>
                       </div>
                     );
                   })()}
@@ -301,178 +375,155 @@ function SessionDetailInner() {
         )}
       </div>
 
-      {/* 6. Session metadata (collapsed) */}
-      <details className="rounded border border-[var(--border)] bg-[var(--surface)] group">
-        <summary className="px-4 py-3 text-xs text-[var(--muted)] uppercase tracking-wider cursor-pointer select-none hover:text-[var(--text)] transition-colors list-none flex items-center justify-between">
-          <span>Session Metadata</span>
-          <span className="opacity-40 group-open:rotate-180 transition-transform inline-block">▾</span>
-        </summary>
-        <div className="px-4 pb-4">
-          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-            <div className="text-[var(--muted)]">Project path</div>
-            <div className="font-mono text-xs text-[var(--text)] truncate">
-              {session.project_path}
-            </div>
+      {/* 4. Evidence — collapsed group */}
+      <div className="space-y-2">
+        <p className="text-xs text-[var(--muted)] uppercase tracking-wider px-1">Evidence</p>
 
-            <div className="text-[var(--muted)]">SHA before → after</div>
-            <div className="font-mono text-xs text-[var(--text)]">
-              {shortSha(session.git_commit_before)} →{" "}
-              {shortSha(session.git_commit_after)}
-            </div>
+        {/* Files touched */}
+        <details className="rounded border border-[var(--border)] bg-[var(--surface)] group">
+          <summary className="px-4 py-3 text-xs text-[var(--muted)] cursor-pointer select-none hover:text-[var(--text)] transition-colors list-none flex items-center justify-between">
+            <span>
+              Files touched
+              {session.file_touches.length > 0 && (
+                <span className="ml-2 normal-case text-[var(--text)]">
+                  ({session.file_touches.length} files
+                  {session.ignored_touches ? `, ${session.ignored_touches} ignored` : ""})
+                </span>
+              )}
+            </span>
+            <span className="opacity-40 group-open:rotate-180 transition-transform inline-block">▾</span>
+          </summary>
+          <div className="px-4 pb-4">
+            <FileTouchTable touches={session.file_touches} />
+          </div>
+        </details>
 
-            <div className="text-[var(--muted)]">Commits during</div>
-            <div className="text-[var(--text)]">
-              {session.commits_during ?? "—"}
-            </div>
+        {/* Raw data */}
+        <details className="rounded border border-[var(--border)] bg-[var(--surface)] group">
+          <summary className="px-4 py-3 text-xs text-[var(--muted)] uppercase tracking-wider cursor-pointer select-none hover:text-[var(--text)] transition-colors list-none flex items-center justify-between">
+            <span>Raw data</span>
+            <span className="opacity-40 group-open:rotate-180 transition-transform inline-block">▾</span>
+          </summary>
+          <div className="px-4 pb-4">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+              <div className="text-[var(--muted)]">Project path</div>
+              <div className="font-mono text-xs text-[var(--text)] truncate">{session.project_path}</div>
 
-            <div className="text-[var(--muted)]">Tree dirty at end</div>
-            <div
-              className={
-                session.tree_dirty
-                  ? "text-[var(--partial)]"
-                  : "text-[var(--success)]"
-              }
-            >
-              {session.tree_dirty == null
-                ? "—"
-                : session.tree_dirty
-                ? "yes"
-                : "no"}
-            </div>
+              <div className="text-[var(--muted)]">SHA before → after</div>
+              <div className="font-mono text-xs text-[var(--text)]">
+                {shortSha(session.git_commit_before)} → {shortSha(session.git_commit_after)}
+              </div>
 
-            <div className="text-[var(--muted)]">Files touched</div>
-            <div className="text-[var(--text)]">
-              {session.files_touched ?? "—"}
-              {session.hot_files ? ` (${session.hot_files} hot)` : ""}
-              {session.ignored_touches
-                ? `, ${session.ignored_touches} ignored`
-                : ""}
-            </div>
+              <div className="text-[var(--muted)]">Commits during</div>
+              <div className="text-[var(--text)]">{session.commits_during ?? "—"}</div>
 
-            <div className="text-[var(--muted)]">Test outcome</div>
-            <div
-              className={
+              <div className="text-[var(--muted)]">Tree dirty at end</div>
+              <div className={session.tree_dirty ? "text-[var(--partial)]" : "text-[var(--success)]"}>
+                {session.tree_dirty == null ? "—" : session.tree_dirty ? "yes" : "no"}
+              </div>
+
+              <div className="text-[var(--muted)]">Files touched</div>
+              <div className="text-[var(--text)]">
+                {session.files_touched ?? "—"}
+                {session.hot_files ? ` (${session.hot_files} hot)` : ""}
+                {session.ignored_touches ? `, ${session.ignored_touches} ignored` : ""}
+              </div>
+
+              <div className="text-[var(--muted)]">Persistence</div>
+              <div className="text-[var(--text)]">
+                {session.persistence_rate != null ? pct(session.persistence_rate) : "—"}
+                {!session.persistence_reliable && session.persistence_rate != null && (
+                  <span className="ml-1 text-xs text-[var(--muted)] opacity-60">(estimate)</span>
+                )}
+              </div>
+
+              <div className="text-[var(--muted)]">Test outcome</div>
+              <div className={
                 session.test_outcome === "pass"
                   ? "text-[var(--success)]"
                   : session.test_outcome === "fail"
                   ? "text-[var(--fail)]"
                   : "text-[var(--muted)]"
-              }
-            >
-              {session.test_outcome ?? "—"}
-              {session.test_source && (
-                <span className="ml-1 text-xs text-[var(--muted)]">
-                  ({session.test_source})
-                </span>
-              )}
-            </div>
+              }>
+                {session.test_outcome ?? "—"}
+                {session.test_source && (
+                  <span className="ml-1 text-xs text-[var(--muted)]">({session.test_source})</span>
+                )}
+              </div>
 
-            <div className="text-[var(--muted)]">Exit code</div>
-            <div
-              className={
-                session.claude_exit_code === 0
-                  ? "text-[var(--success)]"
-                  : "text-[var(--fail)]"
-              }
-            >
-              {session.claude_exit_code ?? "—"}
-            </div>
-
-            <div className="text-[var(--muted)]">Quality score</div>
-            <div className="text-[var(--text)] font-mono">
-              {session.quality_score != null
-                ? pct(session.quality_score)
-                : "—"}
-            </div>
-
-            <div className="text-[var(--muted)]">File churn</div>
-            <div className="text-[var(--text)] font-mono">
-              {session.wandering_score != null
-                ? pct(session.wandering_score)
-                : "—"}
+              <div className="text-[var(--muted)]">Exit code</div>
+              <div className={session.claude_exit_code === 0 ? "text-[var(--success)]" : "text-[var(--fail)]"}>
+                {session.claude_exit_code ?? "—"}
+              </div>
             </div>
           </div>
-        </div>
-      </details>
+        </details>
 
-      {/* 7. Calibration (collapsed) */}
-      <details className="rounded border border-[var(--border)] bg-[var(--surface)] group">
-        <summary className="px-4 py-3 text-xs text-[var(--muted)] cursor-pointer select-none hover:text-[var(--text)] transition-colors list-none flex items-center justify-between">
-          <span>Annotate this session ›</span>
-          <span className="opacity-40 group-open:rotate-180 transition-transform inline-block">▾</span>
-        </summary>
-        <div className="px-4 pb-4 space-y-3">
-          <div>
-            <label className="text-xs text-[var(--muted)] block mb-1">
-              Override outcome
-            </label>
-            <select
-              value={manualOutcome}
-              onChange={(e) => setManualOutcome(e.target.value)}
-              className="w-full text-sm bg-[var(--bg)] border border-[var(--border)] rounded px-3 py-1.5 text-[var(--text)] focus:border-[var(--accent)] outline-none"
-            >
-              <option value="">
-                — auto ({session.auto_outcome ?? "pending"})
-              </option>
-              <option value="success">success</option>
-              <option value="partial">partial</option>
-              <option value="abandoned">abandoned</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="text-xs text-[var(--muted)] block mb-1">
-              Perceived quality (1–5)
-            </label>
-            <div className="flex gap-2">
-              {[1, 2, 3, 4, 5].map((v) => (
-                <button
-                  key={v}
-                  onClick={() =>
-                    setPerceivedQuality(perceivedQuality === v ? null : v)
-                  }
-                  className={`w-8 h-8 rounded text-sm font-mono border transition-colors ${
-                    perceivedQuality === v
-                      ? "bg-[var(--accent)] border-[var(--accent)] text-[var(--bg)]"
-                      : "border-[var(--border)] text-[var(--muted)] hover:border-[var(--accent)]"
-                  }`}
-                >
-                  {v}
-                </button>
-              ))}
+        {/* Annotate */}
+        <details className="rounded border border-[var(--border)] bg-[var(--surface)] group">
+          <summary className="px-4 py-3 text-xs text-[var(--muted)] cursor-pointer select-none hover:text-[var(--text)] transition-colors list-none flex items-center justify-between">
+            <span>Annotate this session</span>
+            <span className="opacity-40 group-open:rotate-180 transition-transform inline-block">▾</span>
+          </summary>
+          <div className="px-4 pb-4 space-y-3">
+            <div>
+              <label className="text-xs text-[var(--muted)] block mb-1">Override outcome</label>
+              <select
+                value={manualOutcome}
+                onChange={(e) => setManualOutcome(e.target.value)}
+                className="w-full text-sm bg-[var(--bg)] border border-[var(--border)] rounded px-3 py-1.5 text-[var(--text)] focus:border-[var(--accent)] outline-none"
+              >
+                <option value="">— auto ({session.auto_outcome ?? "pending"})</option>
+                <option value="success">success</option>
+                <option value="partial">partial</option>
+                <option value="abandoned">abandoned</option>
+              </select>
             </div>
-          </div>
 
-          <div>
-            <label className="text-xs text-[var(--muted)] block mb-1">
-              Note
-            </label>
-            <textarea
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              rows={2}
-              className="w-full text-sm bg-[var(--bg)] border border-[var(--border)] rounded px-3 py-1.5 text-[var(--text)] focus:border-[var(--accent)] outline-none resize-none"
-              placeholder="What happened in this session?"
-            />
-          </div>
+            <div>
+              <label className="text-xs text-[var(--muted)] block mb-1">Perceived quality (1–5)</label>
+              <div className="flex gap-2">
+                {[1, 2, 3, 4, 5].map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setPerceivedQuality(perceivedQuality === v ? null : v)}
+                    className={`w-8 h-8 rounded text-sm font-mono border transition-colors ${
+                      perceivedQuality === v
+                        ? "bg-[var(--accent)] border-[var(--accent)] text-[var(--bg)]"
+                        : "border-[var(--border)] text-[var(--muted)] hover:border-[var(--accent)]"
+                    }`}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-          <div className="flex items-center gap-3">
-            <button
-              onClick={saveManual}
-              disabled={saving}
-              className="px-4 py-1.5 rounded bg-[var(--accent)] text-[var(--bg)] text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
-            >
-              {saving ? "Saving…" : "Save"}
-            </button>
-            {saved && (
-              <span className="text-sm text-[var(--success)] transition-opacity">
-                ✓ Saved
-              </span>
-            )}
+            <div>
+              <label className="text-xs text-[var(--muted)] block mb-1">Note</label>
+              <textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                rows={2}
+                className="w-full text-sm bg-[var(--bg)] border border-[var(--border)] rounded px-3 py-1.5 text-[var(--text)] focus:border-[var(--accent)] outline-none resize-none"
+                placeholder="What happened in this session?"
+              />
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button
+                onClick={saveManual}
+                disabled={saving}
+                className="px-4 py-1.5 rounded bg-[var(--accent)] text-[var(--bg)] text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+              >
+                {saving ? "Saving…" : "Save"}
+              </button>
+              {saved && <span className="text-sm text-[var(--success)]">✓ Saved</span>}
+            </div>
+            {error && <p className="text-xs text-[var(--fail)]">{error}</p>}
           </div>
-          {error && <p className="text-xs text-[var(--fail)]">{error}</p>}
-        </div>
-      </details>
+        </details>
+      </div>
     </div>
   );
 }
@@ -480,11 +531,7 @@ function SessionDetailInner() {
 export default function SessionsPage() {
   return (
     <Suspense
-      fallback={
-        <div className="text-sm text-[var(--muted)] py-12 text-center">
-          Loading…
-        </div>
-      }
+      fallback={<div className="text-sm text-[var(--muted)] py-12 text-center">Loading…</div>}
     >
       <SessionDetailInner />
     </Suspense>

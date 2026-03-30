@@ -11,6 +11,8 @@ Scoring philosophy:
   - When a signal is unavailable, it is omitted cleanly (not zeroed)
 """
 
+import re
+
 
 def compute_wandering_score(files_touched: int, hot_files: int) -> float:
     """
@@ -104,6 +106,197 @@ def classify_outcome(outcome_score: int) -> str:
     if outcome_score >= 1:
         return "partial"
     return "incomplete"
+
+
+def compute_outcome_signals(session: dict) -> list[dict]:
+    """
+    Return the four outcome signals as a list of dicts, each with:
+      label      — human-readable signal name
+      passed     — whether this signal is positive
+      reliable   — whether the signal has real data (False = no data available)
+
+    Used by the API so the UI can render a checklist instead of an opaque score.
+    """
+    commits_during  = int(session.get("commits_during") or 0)
+    tree_dirty      = bool(session.get("tree_dirty"))
+    test_outcome    = session.get("test_outcome")
+    persistence_rate     = session.get("persistence_rate")
+    persistence_reliable = bool(session.get("persistence_reliable"))
+
+    return [
+        {
+            "label":    "Committed code",
+            "passed":   commits_during > 0,
+            "reliable": session.get("commits_during") is not None,
+        },
+        {
+            "label":    "Clean tree at end",
+            "passed":   not tree_dirty,
+            "reliable": session.get("tree_dirty") is not None,
+        },
+        {
+            "label":    "Tests passed",
+            "passed":   test_outcome == "pass",
+            "reliable": test_outcome is not None,
+        },
+        {
+            "label":    "Files persisted to git",
+            "passed":   persistence_reliable and persistence_rate is not None and persistence_rate >= 0.7,
+            "reliable": persistence_reliable and persistence_rate is not None,
+        },
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Sensitive file detection
+# ---------------------------------------------------------------------------
+
+_SENSITIVE_EXACT = frozenset({
+    "package.json", "requirements.txt", "Gemfile", "Cargo.toml",
+    "go.mod", "pyproject.toml", "Dockerfile",
+})
+
+_SENSITIVE_PATTERNS = [
+    re.compile(r'(^|[/\\])\.env(\.|$|[/\\])'),   # .env.local, .env.production …
+    re.compile(r'(^|[/\\])\.env$'),               # bare .env
+    re.compile(r'\.(pem|key|p12|pfx|crt|cer)$'),  # certs / private keys
+    re.compile(r'\.github[/\\]workflows[/\\]'),    # CI/CD
+    re.compile(r'docker-compose'),                 # docker compose files
+    re.compile(r'(^|[/\\])secrets?\.(json|ya?ml|toml)$'),
+]
+
+
+def is_sensitive_file(path: str) -> bool:
+    """Return True if the file path matches a high-signal sensitive pattern."""
+    name = path.replace("\\", "/").split("/")[-1]
+    if name in _SENSITIVE_EXACT:
+        return True
+    return any(p.search(path) for p in _SENSITIVE_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
+# Anomaly detection
+# ---------------------------------------------------------------------------
+
+def compute_anomalies(
+    session: dict,
+    file_touches: list[dict],
+    risky_commands: list[dict],
+) -> list[dict]:
+    """
+    Return detected anomalies as a list of dicts, each with:
+        id        str   machine identifier
+        label     str   short human label
+        detail    str   one-line explanation or evidence
+        severity  str   "major" | "minor" | "caution"
+
+    Ordered: major first, then minor, then caution.
+    Risky commands are NOT included — the verdict engine reads them separately.
+
+    Severity taxonomy:
+        major   — tests_failed, dirty_tree, sensitive_files, low_survival
+        minor   — no_commits, file_churn, large_diff
+        caution — no_tests  (informational; never affects verdict)
+    """
+    results: list[dict] = []
+
+    def add(id_: str, label: str, detail: str, severity: str) -> None:
+        results.append({"id": id_, "label": label, "detail": detail, "severity": severity})
+
+    # ── major ────────────────────────────────────────────────────────────────
+
+    if session.get("test_outcome") == "fail":
+        source = session.get("test_source") or "test runner"
+        add("tests_failed", "Tests failed",
+            f"Test suite failed at session end ({source})", "major")
+
+    if session.get("tree_dirty"):
+        add("dirty_tree", "Uncommitted changes at end",
+            "Working directory was not clean when the session ended", "major")
+
+    if session.get("sensitive_files_touched"):
+        matched = [t["file_path"] for t in file_touches if is_sensitive_file(t["file_path"])]
+        detail = " · ".join(matched[:5])
+        if len(matched) > 5:
+            detail += f" and {len(matched) - 5} more"
+        add("sensitive_files", "Config or env files modified", detail or "sensitive file detected", "major")
+
+    persistence_rate = session.get("persistence_rate")
+    persistence_reliable = bool(session.get("persistence_reliable"))
+    if persistence_reliable and persistence_rate is not None and persistence_rate < 0.5:
+        pct_val = int(round(persistence_rate * 100))
+        add("low_survival", "Most edits were reverted",
+            f"Only {pct_val}% of touched files survived to git", "major")
+
+    # ── minor ────────────────────────────────────────────────────────────────
+
+    commits_during = session.get("commits_during")
+    if session.get("ended_at") is not None and commits_during is not None and commits_during == 0:
+        add("no_commits", "No commits made",
+            "Claude made no git commits during this session", "minor")
+
+    hot_files = int(session.get("hot_files") or 0)
+    if hot_files > 0:
+        hot_paths = [t["file_path"] for t in file_touches if t.get("touch_count", 0) >= 3]
+        detail = " · ".join(hot_paths[:3])
+        if hot_files > 3:
+            detail += f" and {hot_files - 3} more"
+        add("file_churn", "Files edited repeatedly",
+            detail or f"{hot_files} file{'s' if hot_files != 1 else ''} touched 3+ times",
+            "minor")
+
+    diff_lines = session.get("diff_lines")
+    if diff_lines is not None and diff_lines > 500:
+        add("large_diff", "Unusually large changeset",
+            f"{diff_lines:,} lines changed — review carefully", "minor")
+
+    # ── caution ──────────────────────────────────────────────────────────────
+
+    if session.get("test_outcome") is None and session.get("ended_at") is not None:
+        add("no_tests", "No test signal detected",
+            "No test runner output found for this session", "caution")
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Verdict
+# ---------------------------------------------------------------------------
+
+def compute_verdict(
+    catastrophic_count: int,
+    risky_count: int,
+    anomalies: list[dict],
+) -> str:
+    """
+    Derive a trust verdict from command flags and anomaly list.
+    Evaluated top-down; first match wins.
+
+    Returns one of:
+        "blocked" | "high_risk" | "review_required" |
+        "trusted_with_caveats" | "trusted"
+
+    Verdict rules (quality_score is NOT used):
+        blocked               — any catastrophic command fired
+        high_risk             — risky command + at least 1 major anomaly
+                                OR 3+ major anomalies (no risky command needed)
+        review_required       — any risky command OR 2+ major anomalies
+        trusted_with_caveats  — 1 major OR any minor anomaly
+        trusted               — all clear (caution-only does not affect verdict)
+    """
+    if catastrophic_count > 0:
+        return "blocked"
+
+    major = sum(1 for a in anomalies if a["severity"] == "major")
+    minor = sum(1 for a in anomalies if a["severity"] == "minor")
+
+    if (risky_count > 0 and major >= 1) or major >= 3:
+        return "high_risk"
+    if risky_count > 0 or major >= 2:
+        return "review_required"
+    if major >= 1 or minor >= 1:
+        return "trusted_with_caveats"
+    return "trusted"
 
 
 def compute_all(session: dict) -> dict:

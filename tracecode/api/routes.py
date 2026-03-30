@@ -16,9 +16,11 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from tracecode.api.schemas import (
+    Anomaly,
     DiffResponse,
     FileTouchOut,
     HealthResponse,
+    OutcomeSignal,
     PatchSessionRequest,
     RiskyCommandOut,
     SessionDetail,
@@ -85,6 +87,9 @@ def _session_to_summary(row: dict, risk_counts: dict | None = None) -> SessionSu
         duration_seconds=duration,
         risky_count=counts["risky"],
         catastrophic_count=counts["catastrophic"],
+        ignored_touches=row.get("ignored_touches"),
+        verdict=row.get("verdict"),
+        sensitive_files_touched=row.get("sensitive_files_touched"),
     )
 
 
@@ -161,11 +166,26 @@ def get_session_route(session_id: str, config=Depends(_config)):
         risks = get_risky_commands(conn, session_id)
         risk_counts = count_risky_commands(conn, session_id)
 
+    from tracecode.analysis.scoring import (
+        compute_anomalies, compute_outcome_signals, compute_verdict,
+    )
+    signals   = [OutcomeSignal(**s) for s in compute_outcome_signals(row)]
+    anomalies = compute_anomalies(row, touches, risks)
+    verdict   = row.get("verdict") or compute_verdict(
+        risk_counts["catastrophic"], risk_counts["risky"], anomalies
+    )
+
     summary = _session_to_summary(row, risk_counts)
+    # Back-fill verdict on summary for sessions predating step 8
+    if not summary.verdict:
+        summary = summary.model_copy(update={"verdict": verdict})
+
     return SessionDetail(
         **summary.model_dump(),
         file_touches=[_touch_to_out(t) for t in touches],
         risky_commands=[_risk_to_out(r) for r in risks],
+        outcome_signals=signals,
+        anomalies=[Anomaly(**a) for a in anomalies],
     )
 
 
@@ -226,9 +246,23 @@ def patch_session_route(
         risks = get_risky_commands(conn, session_id)
         risk_counts = count_risky_commands(conn, session_id)
 
+    from tracecode.analysis.scoring import (
+        compute_anomalies, compute_outcome_signals, compute_verdict,
+    )
+    signals   = [OutcomeSignal(**s) for s in compute_outcome_signals(row)]
+    anomalies = compute_anomalies(row, touches, risks)
+    verdict   = row.get("verdict") or compute_verdict(
+        risk_counts["catastrophic"], risk_counts["risky"], anomalies
+    )
+
     summary = _session_to_summary(row, risk_counts)
+    if not summary.verdict:
+        summary = summary.model_copy(update={"verdict": verdict})
+
     return SessionDetail(
         **summary.model_dump(),
         file_touches=[_touch_to_out(t) for t in touches],
         risky_commands=[_risk_to_out(r) for r in risks],
+        outcome_signals=signals,
+        anomalies=[Anomaly(**a) for a in anomalies],
     )

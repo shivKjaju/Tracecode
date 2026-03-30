@@ -1,8 +1,5 @@
 """
 api/schemas.py — Pydantic response and request models for the REST API.
-
-All models are read-only except PatchSessionRequest which covers
-the three manual-enrichment fields the user can update.
 """
 
 from __future__ import annotations
@@ -12,23 +9,36 @@ from typing import Literal
 from pydantic import BaseModel
 
 
-# ---------------------------------------------------------------------------
-# Shared / nested
-# ---------------------------------------------------------------------------
+class Anomaly(BaseModel):
+    id: str
+    label: str
+    detail: str
+    severity: str  # "major" | "minor" | "caution"
+
 
 class FileTouchOut(BaseModel):
     id: int
     file_path: str
     touch_count: int
-    first_touch_at: int        # Unix ms
-    last_touch_at: int         # Unix ms
-    persisted: int | None      # 1=persisted, 0=reverted, None=unknown
-    is_hot: bool               # touch_count >= 3
+    first_touch_at: int
+    last_touch_at: int
+    persisted: int | None
+    is_hot: bool
 
 
-# ---------------------------------------------------------------------------
-# Session list item (lighter — no file touches)
-# ---------------------------------------------------------------------------
+class OutcomeSignal(BaseModel):
+    label: str
+    passed: bool
+    reliable: bool
+
+
+class RiskyCommandOut(BaseModel):
+    id: int
+    command: str
+    tier: str
+    reason: str
+    flagged_at: int
+
 
 class SessionSummary(BaseModel):
     id: str
@@ -42,6 +52,7 @@ class SessionSummary(BaseModel):
     claude_exit_code: int | None
     files_touched: int | None
     hot_files: int | None
+    ignored_touches: int | None
     commits_during: int | None
     tree_dirty: int | None
     persistence_rate: float | None
@@ -58,6 +69,8 @@ class SessionSummary(BaseModel):
     duration_seconds: int | None
     risky_count: int
     catastrophic_count: int
+    verdict: str | None
+    sensitive_files_touched: int | None
 
 
 class SessionListResponse(BaseModel):
@@ -67,50 +80,24 @@ class SessionListResponse(BaseModel):
     offset: int
 
 
-# ---------------------------------------------------------------------------
-# Session detail (includes file touches)
-# ---------------------------------------------------------------------------
-
 class SessionDetail(SessionSummary):
     file_touches: list[FileTouchOut]
     risky_commands: list[RiskyCommandOut]
+    outcome_signals: list[OutcomeSignal]
+    anomalies: list[Anomaly]
 
-
-# ---------------------------------------------------------------------------
-# Diff response
-# ---------------------------------------------------------------------------
 
 class DiffResponse(BaseModel):
     session_id: str
-    diff: str       # raw unified diff output
-    available: bool # False when git unavailable or no start SHA
+    diff: str
+    available: bool
 
-
-# ---------------------------------------------------------------------------
-# PATCH request
-# ---------------------------------------------------------------------------
 
 class PatchSessionRequest(BaseModel):
     manual_outcome: Literal["success", "partial", "abandoned"] | None = None
     note: str | None = None
-    perceived_quality: int | None = None   # 1-5
+    perceived_quality: int | None = None
 
-
-# ---------------------------------------------------------------------------
-# Risky commands
-# ---------------------------------------------------------------------------
-
-class RiskyCommandOut(BaseModel):
-    id: int
-    command: str
-    tier: str       # 'catastrophic' | 'risky'
-    reason: str
-    flagged_at: int
-
-
-# ---------------------------------------------------------------------------
-# Health
-# ---------------------------------------------------------------------------
 
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"

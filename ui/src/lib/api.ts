@@ -6,6 +6,13 @@
  * on the same host. In dev, next.config.js proxies /api/* to port 7842.
  */
 
+export interface Anomaly {
+  id: string;
+  label: string;
+  detail: string;
+  severity: "major" | "minor" | "caution";
+}
+
 export interface FileTouch {
   id: number;
   file_path: string;
@@ -22,6 +29,12 @@ export interface RiskyCommand {
   tier: "catastrophic" | "risky";
   reason: string;
   flagged_at: number;
+}
+
+export interface OutcomeSignal {
+  label: string;
+  passed: boolean;
+  reliable: boolean;
 }
 
 export interface SessionSummary {
@@ -50,13 +63,18 @@ export interface SessionSummary {
   note: string | null;
   perceived_quality: number | null;
   duration_seconds: number | null;
+  ignored_touches: number | null;
   risky_count: number;
   catastrophic_count: number;
+  verdict: string | null;
+  sensitive_files_touched: number | null;
 }
 
 export interface SessionDetail extends SessionSummary {
   file_touches: FileTouch[];
   risky_commands: RiskyCommand[];
+  outcome_signals: OutcomeSignal[];
+  anomalies: Anomaly[];
 }
 
 export interface SessionListResponse {

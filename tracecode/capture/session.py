@@ -121,27 +121,45 @@ def end_session(
         from tracecode.capture.watcher import aggregate_watch_file
         watch_path = config.tracecode_dir / f"watch_{session_id}.jsonl"
         with get_conn(config.db_path) as conn:
-            aggregate_watch_file(session_id, watch_path, conn)
+            aggregate_watch_file(session_id, watch_path, conn,
+                                 project_path=project_path)
         watch_path.unlink(missing_ok=True)
     except Exception as exc:
         logger.warning("Watcher aggregation failed for %s: %s", session_id, exc)
+
+    # ------------------------------------------------------------------
+    # Step 3.5: Detect sensitive files from aggregated touches
+    # ------------------------------------------------------------------
+    try:
+        from tracecode.db import get_file_touches
+        from tracecode.analysis.scoring import is_sensitive_file
+        with get_conn(config.db_path) as conn:
+            touches = get_file_touches(conn, session_id)
+        sensitive = any(is_sensitive_file(t["file_path"]) for t in touches)
+        with get_conn(config.db_path) as conn:
+            update_session(conn, session_id, sensitive_files_touched=1 if sensitive else 0)
+    except Exception as exc:
+        logger.warning("Sensitive file detection failed for %s: %s", session_id, exc)
 
     # ------------------------------------------------------------------
     # Step 4: Git analysis
     # ------------------------------------------------------------------
     try:
         from tracecode.capture.git import (
+            count_diff_lines,
             get_commits_since,
             get_head_sha,
             is_git_repo,
             is_tree_dirty,
         )
         if project_path and is_git_repo(project_path):
+            diff_lines = count_diff_lines(project_path, git_commit_before or None)
             with get_conn(config.db_path) as conn:
                 update_session(conn, session_id,
                     git_commit_after = get_head_sha(project_path),
                     commits_during   = get_commits_since(project_path, git_commit_before or None),
                     tree_dirty       = 1 if is_tree_dirty(project_path) else 0,
+                    diff_lines       = diff_lines,
                 )
     except Exception as exc:
         logger.warning("Git analysis failed for %s: %s", session_id, exc)
@@ -189,6 +207,29 @@ def end_session(
                 update_session(conn, session_id, **scores)
     except Exception as exc:
         logger.warning("Scoring failed for %s: %s", session_id, exc)
+
+    # ------------------------------------------------------------------
+    # Step 8: Verdict — requires file touches + risky commands
+    # ------------------------------------------------------------------
+    try:
+        from tracecode.analysis.scoring import compute_anomalies, compute_verdict
+        from tracecode.db import get_file_touches, get_risky_commands, count_risky_commands
+        with get_conn(config.db_path) as conn:
+            final_row   = get_session(conn, session_id) or {}
+            touches     = get_file_touches(conn, session_id)
+            risks       = get_risky_commands(conn, session_id)
+            risk_counts = count_risky_commands(conn, session_id)
+        if final_row:
+            anomalies = compute_anomalies(final_row, touches, risks)
+            verdict   = compute_verdict(
+                risk_counts["catastrophic"],
+                risk_counts["risky"],
+                anomalies,
+            )
+            with get_conn(config.db_path) as conn:
+                update_session(conn, session_id, verdict=verdict)
+    except Exception as exc:
+        logger.warning("Verdict computation failed for %s: %s", session_id, exc)
 
 
 # ---------------------------------------------------------------------------

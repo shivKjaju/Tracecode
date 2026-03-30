@@ -11,6 +11,7 @@ These are read-only queries used at session boundaries (start and end).
 Heavier post-session analysis (diffs, commit counting) will be added in Day 4.
 """
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -178,6 +179,27 @@ def get_net_diff(path: str | Path, start_sha: str | None) -> str | None:
     if code != 0:
         return None
     return output if output.strip() else None
+
+
+def count_diff_lines(path: str | Path, start_sha: str | None) -> int | None:
+    """
+    Return the total lines changed (added + removed) between start_sha and HEAD.
+    Uses `git diff --stat` which is fast and does not output file contents.
+    Returns None if start_sha is absent, the repo has no changes, or git fails.
+    """
+    if not start_sha:
+        return None
+    code, output = _git(["diff", "--stat", start_sha, "HEAD"], path)
+    if code != 0 or not output:
+        return None
+    # Last line of --stat: "N files changed, X insertions(+), Y deletions(-)"
+    last = output.strip().splitlines()[-1]
+    added_m   = re.search(r'(\d+) insertion', last)
+    removed_m = re.search(r'(\d+) deletion', last)
+    added   = int(added_m.group(1))   if added_m   else 0
+    removed = int(removed_m.group(1)) if removed_m else 0
+    total = added + removed
+    return total if total > 0 else None
 
 
 def get_project_root(path: str | Path) -> str | None:
