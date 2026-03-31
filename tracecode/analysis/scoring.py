@@ -317,6 +317,112 @@ def compute_verdict(
     return "trusted"
 
 
+_REVIEW_FIRST_SENSITIVE_EXACT = frozenset({
+    "package.json", "requirements.txt", "Gemfile", "Cargo.toml",
+    "go.mod", "pyproject.toml", "Dockerfile",
+})
+
+_REVIEW_FIRST_SENSITIVE_PATTERNS = [
+    re.compile(r'(^|[/\\])\.env(\.|$|[/\\])'),
+    re.compile(r'(^|[/\\])\.env$'),
+    re.compile(r'\.(pem|key|p12|pfx|crt|cer)$'),
+    re.compile(r'\.github[/\\]workflows[/\\]'),
+    re.compile(r'docker-compose'),
+    re.compile(r'(^|[/\\])secrets?\.(json|ya?ml|toml)$'),
+    re.compile(r'config\.(py|js|ts|json|ya?ml|toml|rb)$', re.I),
+    re.compile(r'settings\.(py|js|ts|json|ya?ml|toml)$', re.I),
+    re.compile(r'\.(yaml|yml|toml)$', re.I),
+    re.compile(r'requirements\.txt$'),
+    re.compile(r'package\.json$'),
+    re.compile(r'Dockerfile$'),
+]
+
+
+def compute_review_first(
+    file_touches: list[dict],
+    risky_commands: list[dict],
+    session_verdict: str | None,
+    diff_lines: int | None,
+    max_files: int = 5,
+) -> list[dict]:
+    """
+    Rank file touches by inspection priority.
+
+    Signals and weights:
+        persisted to git                        +30
+        repeated edits (>=3 touches, persisted) +20
+        unstable edits (>=3 touches, not saved) +20  (new: thrashy files that didn't survive)
+        config/sensitive path                   +25
+        referenced in a risky command           +15
+        in final diff (persisted + diff exists) +10
+
+    Files scoring < 20 are suppressed.
+    Returns up to max_files files sorted by score descending.
+    Suppressed entirely when verdict is 'trusted' and no HIGH-priority files exist.
+    """
+    risky_cmd_text = " ".join(r.get("command", "") for r in risky_commands)
+
+    results: list[dict] = []
+    for ft in file_touches:
+        file_path = ft.get("file_path", "")
+        touch_count = int(ft.get("touch_count") or 0)
+        persisted = ft.get("persisted")  # 1 = yes, 0 = no, None = unknown
+
+        score = 0
+        reasons: list[tuple[str, int]] = []
+
+        if persisted == 1:
+            score += 30
+            reasons.append(("persisted", 30))
+
+        if touch_count >= 3:
+            if persisted == 1:
+                score += 20
+                reasons.append(("repeated edits", 20))
+            else:
+                # Thrashed but didn't survive — worth inspecting
+                score += 20
+                reasons.append(("unstable edits", 20))
+
+        name = file_path.replace("\\", "/").split("/")[-1]
+        if (
+            name in _REVIEW_FIRST_SENSITIVE_EXACT
+            or any(p.search(file_path) for p in _REVIEW_FIRST_SENSITIVE_PATTERNS)
+        ):
+            score += 25
+            reasons.append(("config-sensitive", 25))
+
+        if file_path in risky_cmd_text:
+            score += 15
+            reasons.append(("in flagged command", 15))
+
+        if persisted == 1 and (diff_lines or 0) > 0:
+            score += 10
+            reasons.append(("in final diff", 10))
+
+        if score < 20:
+            continue
+
+        top_reasons = [r[0] for r in sorted(reasons, key=lambda x: -x[1])][:2]
+        priority = "HIGH" if score >= 50 else "MEDIUM"
+
+        results.append({
+            "file_path": file_path,
+            "score": score,
+            "reasons": top_reasons,
+            "priority": priority,
+        })
+
+    results.sort(key=lambda x: -x["score"])
+    top = results[:max_files]
+
+    # Suppress the section when the session is clean and nothing ranks HIGH
+    if session_verdict == "trusted" and not any(r["priority"] == "HIGH" for r in top):
+        return []
+
+    return top
+
+
 def compute_all(session: dict) -> dict:
     """
     Compute all scores from a session row dict (as returned by db.get_session).

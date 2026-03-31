@@ -86,6 +86,13 @@ class RuntimeEventOut(BaseModel):
     fired_at: int
 
 
+class ReviewFirstFile(BaseModel):
+    file_path: str
+    score: int
+    reasons: list[str]
+    priority: str  # "HIGH" | "MEDIUM"
+
+
 class SessionDetail(SessionSummary):
     file_touches: list[FileTouchOut]
     risky_commands: list[RiskyCommandOut]
@@ -94,6 +101,7 @@ class SessionDetail(SessionSummary):
     runtime_events: list[RuntimeEventOut]
     checkpoint_fired: bool
     runtime_warning_count: int
+    review_first: list[ReviewFirstFile] = []
 
 
 class DiffResponse(BaseModel):

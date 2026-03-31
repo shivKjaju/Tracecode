@@ -102,7 +102,12 @@ export default function FeedPage() {
               >
                 {/* Verdict pill — primary signal */}
                 <div className="shrink-0">
-                  <VerdictBadge verdict={s.verdict} small />
+                  <VerdictBadge
+                    verdict={s.verdict}
+                    small
+                    endedAt={s.ended_at}
+                    hasData={s.files_touched !== null}
+                  />
                 </div>
 
                 {/* Project / anomaly tags */}

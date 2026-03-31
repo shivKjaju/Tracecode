@@ -22,6 +22,7 @@ from tracecode.api.schemas import (
     HealthResponse,
     OutcomeSignal,
     PatchSessionRequest,
+    ReviewFirstFile,
     RiskyCommandOut,
     RuntimeEventOut,
     SessionDetail,
@@ -160,6 +161,9 @@ def list_sessions_route(
 
 @router.get("/sessions/{session_id}", response_model=SessionDetail)
 def get_session_route(session_id: str, config=Depends(_config)):
+    from tracecode.analysis.scoring import (
+        compute_anomalies, compute_outcome_signals, compute_verdict, compute_review_first,
+    )
     with get_conn(config.db_path) as conn:
         row = get_session(conn, session_id)
         if row is None:
@@ -169,14 +173,23 @@ def get_session_route(session_id: str, config=Depends(_config)):
         risk_counts = count_risky_commands(conn, session_id)
         runtime_events_raw = get_session_events(conn, session_id)
 
-    from tracecode.analysis.scoring import (
-        compute_anomalies, compute_outcome_signals, compute_verdict,
-    )
-    signals   = [OutcomeSignal(**s) for s in compute_outcome_signals(row)]
-    anomalies = compute_anomalies(row, touches, risks, runtime_events_raw)
-    verdict   = row.get("verdict") or compute_verdict(
-        risk_counts["catastrophic"], risk_counts["risky"], anomalies
-    )
+        signals   = [OutcomeSignal(**s) for s in compute_outcome_signals(row)]
+        anomalies = compute_anomalies(row, touches, risks, runtime_events_raw)
+
+        verdict = row.get("verdict")
+        if not verdict and row.get("ended_at") is not None:
+            verdict = compute_verdict(
+                risk_counts["catastrophic"], risk_counts["risky"], anomalies
+            )
+            if verdict:
+                update_session(conn, session_id, verdict=verdict)
+
+        review_first = compute_review_first(
+            file_touches=touches,
+            risky_commands=risks,
+            session_verdict=verdict,
+            diff_lines=row.get("diff_lines"),
+        )
 
     _checkpoint_types = {"blast_radius", "file_churn", "risky_accumulation"}
     checkpoint_fired = any(e["event_type"] in _checkpoint_types for e in runtime_events_raw)
@@ -185,7 +198,6 @@ def get_session_route(session_id: str, config=Depends(_config)):
     )
 
     summary = _session_to_summary(row, risk_counts)
-    # Back-fill verdict on summary for sessions predating step 8
     if not summary.verdict:
         summary = summary.model_copy(update={"verdict": verdict})
 
@@ -198,6 +210,7 @@ def get_session_route(session_id: str, config=Depends(_config)):
         runtime_events=[RuntimeEventOut(**e) for e in runtime_events_raw],
         checkpoint_fired=checkpoint_fired,
         runtime_warning_count=runtime_warning_count,
+        review_first=[ReviewFirstFile(**f) for f in review_first],
     )
 
 
@@ -238,13 +251,15 @@ def patch_session_route(
     body: PatchSessionRequest,
     config=Depends(_config),
 ):
+    from tracecode.analysis.scoring import (
+        compute_anomalies, compute_outcome_signals, compute_verdict, compute_review_first,
+    )
     with get_conn(config.db_path) as conn:
         row = get_session(conn, session_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Session not found")
 
         updates = body.model_dump(exclude_unset=True)
-        # Validate perceived_quality range if provided
         pq = updates.get("perceived_quality")
         if pq is not None and not (1 <= pq <= 5):
             raise HTTPException(status_code=422, detail="perceived_quality must be 1-5")
@@ -259,14 +274,23 @@ def patch_session_route(
         risk_counts = count_risky_commands(conn, session_id)
         runtime_events_raw = get_session_events(conn, session_id)
 
-    from tracecode.analysis.scoring import (
-        compute_anomalies, compute_outcome_signals, compute_verdict,
-    )
-    signals   = [OutcomeSignal(**s) for s in compute_outcome_signals(row)]
-    anomalies = compute_anomalies(row, touches, risks, runtime_events_raw)
-    verdict   = row.get("verdict") or compute_verdict(
-        risk_counts["catastrophic"], risk_counts["risky"], anomalies
-    )
+        signals   = [OutcomeSignal(**s) for s in compute_outcome_signals(row)]
+        anomalies = compute_anomalies(row, touches, risks, runtime_events_raw)
+
+        verdict = row.get("verdict")
+        if not verdict and row.get("ended_at") is not None:
+            verdict = compute_verdict(
+                risk_counts["catastrophic"], risk_counts["risky"], anomalies
+            )
+            if verdict:
+                update_session(conn, session_id, verdict=verdict)
+
+        review_first = compute_review_first(
+            file_touches=touches,
+            risky_commands=risks,
+            session_verdict=verdict,
+            diff_lines=row.get("diff_lines"),
+        )
 
     _checkpoint_types = {"blast_radius", "file_churn", "risky_accumulation"}
     checkpoint_fired = any(e["event_type"] in _checkpoint_types for e in runtime_events_raw)
@@ -287,4 +311,5 @@ def patch_session_route(
         runtime_events=[RuntimeEventOut(**e) for e in runtime_events_raw],
         checkpoint_fired=checkpoint_fired,
         runtime_warning_count=runtime_warning_count,
+        review_first=[ReviewFirstFile(**f) for f in review_first],
     )

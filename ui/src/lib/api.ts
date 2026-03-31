@@ -76,6 +76,13 @@ export interface RuntimeEvent {
   fired_at: number;
 }
 
+export interface ReviewFirstFile {
+  file_path: string;
+  score: number;
+  reasons: string[];
+  priority: "HIGH" | "MEDIUM";
+}
+
 export interface SessionDetail extends SessionSummary {
   file_touches: FileTouch[];
   risky_commands: RiskyCommand[];
@@ -84,6 +91,7 @@ export interface SessionDetail extends SessionSummary {
   runtime_events: RuntimeEvent[];
   checkpoint_fired: boolean;
   runtime_warning_count: number;
+  review_first: ReviewFirstFile[];
 }
 
 export interface SessionListResponse {

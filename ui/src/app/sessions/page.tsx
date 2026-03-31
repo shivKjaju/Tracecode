@@ -7,7 +7,7 @@
 import { Suspense, useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { api, type SessionDetail, type DiffResponse, type Anomaly } from "@/lib/api";
+import { api, type SessionDetail, type DiffResponse, type Anomaly, type ReviewFirstFile } from "@/lib/api";
 import { fmtTime, fmtDuration, shortSha, pct, diffStats } from "@/lib/format";
 import { VerdictBadge } from "@/components/VerdictBadge";
 import { FileTouchTable } from "@/components/FileTouchTable";
@@ -18,11 +18,11 @@ import { DiffViewer } from "@/components/DiffViewer";
 // ---------------------------------------------------------------------------
 
 const VERDICT_SUMMARY: Record<string, string> = {
-  trusted:              "No anomalies detected.",
-  trusted_with_caveats: "Mostly clean with minor cautions.",
-  review_required:      "This session has issues that need your attention.",
-  high_risk:            "Multiple serious issues require review before accepting changes.",
-  blocked:              "A dangerous command was intercepted.",
+  trusted:              "All signals clear. Safe to continue.",
+  trusted_with_caveats: "Minor signals worth a quick look. Scan the notes before closing.",
+  review_required:      "Review flagged commands and changed files before continuing.",
+  high_risk:            "Do not merge or deploy until you have reviewed every flagged item below.",
+  blocked:              "Treat all outputs as untrusted. Audit every change before use.",
 };
 
 const VERDICT_BORDER: Record<string, string> = {
@@ -71,6 +71,45 @@ function VerdictBanner({ verdict, anomalies, riskyCount, catastrophicCount }: {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Review First
+// ---------------------------------------------------------------------------
+
+const PRIORITY_CLS: Record<string, string> = {
+  HIGH:   "text-[#e08030] border-[#e08030]/40 bg-[#2e1a06]",
+  MEDIUM: "text-[var(--muted)] border-[var(--border)] bg-transparent",
+};
+
+function ReviewFirst({ files }: { files: ReviewFirstFile[] }) {
+  if (files.length === 0) return null;
+  return (
+    <div className="rounded border border-[var(--border)] bg-[var(--surface)] p-4">
+      <p className="text-xs text-[var(--muted)] uppercase tracking-wider mb-3">
+        Review First
+      </p>
+      <div className="space-y-2.5">
+        {files.map((f) => (
+          <div key={f.file_path} className="flex items-start gap-3">
+            <span
+              className={`text-xs px-1.5 py-0.5 rounded border shrink-0 mt-0.5 font-mono ${PRIORITY_CLS[f.priority] ?? PRIORITY_CLS.MEDIUM}`}
+            >
+              {f.priority}
+            </span>
+            <div className="min-w-0">
+              <p className="font-mono text-xs text-[var(--text)] truncate">
+                {f.file_path}
+              </p>
+              <p className="text-xs text-[var(--muted)] mt-0.5">
+                {f.reasons.join(" · ")}
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -307,20 +346,10 @@ function SessionDetailInner() {
         catastrophicCount={session.catastrophic_count}
       />
 
-      {/* 1b. Runtime flags — compact summary row, shown only when events fired */}
-      {(session.checkpoint_fired || session.runtime_warning_count > 0) && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded border border-[#e08030]/25 bg-[#2e1a06]/30 text-sm text-[var(--muted)]">
-          <span className="text-[#e08030] text-xs shrink-0">⚡</span>
-          <span>
-            {session.checkpoint_fired && "Checkpoint triggered during session"}
-            {session.checkpoint_fired && session.runtime_warning_count > 0 && " · "}
-            {session.runtime_warning_count > 0 &&
-              `${session.runtime_warning_count} sensitive file warning${session.runtime_warning_count > 1 ? "s" : ""}`}
-          </span>
-        </div>
-      )}
+      {/* 2. Review First — top files to inspect */}
+      <ReviewFirst files={session.review_first ?? []} />
 
-      {/* 2. Anomalies */}
+      {/* 3. Anomalies */}
       {(anomalies.length > 0 || session.risky_commands.length > 0) && (
         <div className="space-y-3">
           {session.risky_commands.length > 0 && (
