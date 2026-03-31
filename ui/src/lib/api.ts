@@ -70,11 +70,20 @@ export interface SessionSummary {
   sensitive_files_touched: number | null;
 }
 
+export interface RuntimeEvent {
+  event_type: string;
+  payload: string | null;
+  fired_at: number;
+}
+
 export interface SessionDetail extends SessionSummary {
   file_touches: FileTouch[];
   risky_commands: RiskyCommand[];
   outcome_signals: OutcomeSignal[];
   anomalies: Anomaly[];
+  runtime_events: RuntimeEvent[];
+  checkpoint_fired: boolean;
+  runtime_warning_count: number;
 }
 
 export interface SessionListResponse {

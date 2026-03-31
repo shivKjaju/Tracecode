@@ -90,11 +90,21 @@ CREATE TABLE IF NOT EXISTS risky_commands (
     flagged_at  INTEGER NOT NULL    -- Unix seconds
 );
 
+CREATE TABLE IF NOT EXISTS session_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id   TEXT    NOT NULL,
+    event_type   TEXT    NOT NULL,  -- 'blast_radius' | 'file_churn' | 'sensitive_file_warned' | 'risky_accumulation'
+    payload      TEXT,              -- JSON string with context
+    fired_at     INTEGER NOT NULL,  -- Unix seconds
+    notified     INTEGER NOT NULL DEFAULT 0  -- 1 once checkpoint hook has output this event
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_started      ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_project      ON sessions(project_name, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_file_touches_session  ON file_touches(session_id);
 CREATE INDEX IF NOT EXISTS idx_file_touches_hot      ON file_touches(session_id, touch_count DESC);
 CREATE INDEX IF NOT EXISTS idx_risky_session         ON risky_commands(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_events_lookup ON session_events(session_id, notified);
 """
 
 # Columns that may be updated after a session is created.
@@ -391,3 +401,25 @@ def count_risky_commands(conn: sqlite3.Connection, session_id: str) -> dict:
     for r in rows:
         result[r["tier"]] = r["n"]
     return result
+
+
+# ---------------------------------------------------------------------------
+# Session events (runtime trust signals)
+# ---------------------------------------------------------------------------
+
+def get_session_events(conn: sqlite3.Connection, session_id: str) -> list[dict]:
+    """Return all session_events for a session, ordered by fired_at."""
+    rows = conn.execute(
+        "SELECT * FROM session_events WHERE session_id = ? ORDER BY fired_at ASC",
+        (session_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_unnotified_events(conn: sqlite3.Connection, session_id: str) -> list[dict]:
+    """Return session_events not yet sent to Claude, ordered by fired_at."""
+    rows = conn.execute(
+        "SELECT * FROM session_events WHERE session_id = ? AND notified = 0 ORDER BY fired_at ASC",
+        (session_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]

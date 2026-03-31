@@ -46,6 +46,18 @@ _CATASTROPHIC: list[tuple[re.Pattern, str]] = [
         re.compile(r">\s*/etc/(passwd|shadow|sudoers)", re.I),
         "overwriting a critical system auth file",
     ),
+    (
+        re.compile(r"curl\s+\S.*\|\s*(ba)?sh\b", re.I),
+        "curl piped to shell — supply-chain code execution risk",
+    ),
+    (
+        re.compile(r"wget\s+\S.*\|\s*(ba)?sh\b", re.I),
+        "wget piped to shell — supply-chain code execution risk",
+    ),
+    (
+        re.compile(r"(>|tee)\s*/(?:etc|usr/local/bin|usr/bin|bin|sbin)/", re.I),
+        "writing to a system path outside project scope",
+    ),
 ]
 
 # Logged and allowed — Claude's permission prompt still fires
@@ -53,14 +65,6 @@ _RISKY: list[tuple[re.Pattern, str]] = [
     (
         re.compile(r"\bsudo\s+rm\b", re.I),
         "sudo rm — elevated file deletion",
-    ),
-    (
-        re.compile(r"curl\s+.*\|\s*(ba)?sh\b", re.I),
-        "curl piped to shell (supply-chain risk)",
-    ),
-    (
-        re.compile(r"wget\s+.*\|\s*(ba)?sh\b", re.I),
-        "wget piped to shell (supply-chain risk)",
     ),
     (
         re.compile(r"\bgit\s+push\s+.*--force\b.*\b(main|master)\b", re.I),
@@ -168,6 +172,7 @@ def run() -> None:
         _log_to_db(session_id, command, tier, reason)
         sys.exit(2)
 
-    # risky — log and allow (Claude's permission prompt handles the UX)
+    # risky — log, warn on stderr, and allow (Claude's permission prompt handles the UX)
     _log_to_db(session_id, command, tier, reason)
+    print(f"[tracecode] \u26a0 risky: {reason}", file=sys.stderr)
     sys.exit(0)

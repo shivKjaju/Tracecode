@@ -80,11 +80,20 @@ class SessionListResponse(BaseModel):
     offset: int
 
 
+class RuntimeEventOut(BaseModel):
+    event_type: str
+    payload: str | None
+    fired_at: int
+
+
 class SessionDetail(SessionSummary):
     file_touches: list[FileTouchOut]
     risky_commands: list[RiskyCommandOut]
     outcome_signals: list[OutcomeSignal]
     anomalies: list[Anomaly]
+    runtime_events: list[RuntimeEventOut]
+    checkpoint_fired: bool
+    runtime_warning_count: int
 
 
 class DiffResponse(BaseModel):

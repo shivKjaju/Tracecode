@@ -17,6 +17,7 @@ At aggregation time, files matched by .gitignore or a transient-file filter
 are excluded from all metrics and counted separately as ignored_touches.
 """
 
+import collections
 import json
 import os
 import signal
@@ -84,9 +85,24 @@ _AGGREGATION_IGNORE_NAMES: frozenset[str] = frozenset({
 # ---------------------------------------------------------------------------
 
 class FileChangeHandler(FileSystemEventHandler):
-    def __init__(self, project_path: str, output_file) -> None:
+    def __init__(
+        self,
+        project_path: str,
+        output_file,
+        session_id: str = "",
+        db_path: Path | None = None,
+    ) -> None:
         self.project_path = str(Path(project_path).resolve())
         self.output_file = output_file
+        self.session_id = session_id
+        self.db_path = db_path
+        # Runtime threshold tracking (in-memory only, never written to JSONL)
+        self._path_counts: dict[str, int] = {}
+        self._path_churn_warned: set[str] = set()
+        self._blast_radius_fired: bool = False
+        self._sensitive_warned: set[str] = set()
+        # Rolling window for blast radius: (timestamp_ms, rel_path) pairs
+        self._recent_events: collections.deque = collections.deque(maxlen=2000)
 
     def on_modified(self, event: FileSystemEvent) -> None:
         if not event.is_directory:
@@ -108,11 +124,53 @@ class FileChangeHandler(FileSystemEventHandler):
         except ValueError:
             return
         rel_path = rel_path.replace(os.sep, "/")
-        record = {"path": rel_path, "ts": int(time.time() * 1000)}
+        now_ms = int(time.time() * 1000)
+        record = {"path": rel_path, "ts": now_ms}
         try:
             self.output_file.write(json.dumps(record) + "\n")
             self.output_file.flush()
         except OSError:
+            pass
+        if self.session_id and self.db_path:
+            self._check_thresholds(rel_path, now_ms)
+
+    def _check_thresholds(self, rel_path: str, now_ms: int) -> None:
+        self._path_counts[rel_path] = self._path_counts.get(rel_path, 0) + 1
+        self._recent_events.append((now_ms, rel_path))
+
+        # Sensitive file — warn on first touch per unique path
+        from tracecode.analysis.scoring import is_sensitive_file
+        if is_sensitive_file(rel_path) and rel_path not in self._sensitive_warned:
+            self._sensitive_warned.add(rel_path)
+            self._write_event("sensitive_file_warned", {"file_path": rel_path})
+
+        # File churn — more than 5 touches on the same file
+        count = self._path_counts[rel_path]
+        if count > 5 and rel_path not in self._path_churn_warned:
+            self._path_churn_warned.add(rel_path)
+            self._write_event("file_churn", {"file_path": rel_path, "touch_count": count})
+
+        # Blast radius — more than 15 unique files in the last 90 seconds (fires once)
+        if not self._blast_radius_fired:
+            cutoff = now_ms - 90_000
+            while self._recent_events and self._recent_events[0][0] < cutoff:
+                self._recent_events.popleft()
+            unique_recent = len({p for _, p in self._recent_events})
+            if unique_recent > 15:
+                self._blast_radius_fired = True
+                self._write_event("blast_radius", {"unique_files": unique_recent, "window_seconds": 90})
+
+    def _write_event(self, event_type: str, payload: dict) -> None:
+        try:
+            from tracecode.db import get_conn
+            with get_conn(self.db_path) as conn:
+                conn.execute(
+                    "INSERT INTO session_events"
+                    " (session_id, event_type, payload, fired_at, notified)"
+                    " VALUES (?, ?, ?, ?, 0)",
+                    (self.session_id, event_type, json.dumps(payload), int(time.time())),
+                )
+        except Exception:
             pass
 
     def _should_ignore(self, abs_path: str) -> bool:
@@ -132,6 +190,10 @@ class FileChangeHandler(FileSystemEventHandler):
 # ---------------------------------------------------------------------------
 
 def run_watcher(session_id: str, project_path: str, tracecode_dir: Path) -> None:
+    from tracecode.config import DEFAULT_CONFIG_PATH, load_config
+    config = load_config(DEFAULT_CONFIG_PATH)
+    db_path = config.db_path
+
     output_path = tracecode_dir / f"watch_{session_id}.jsonl"
     project_path = str(Path(project_path).resolve())
     stop_event = threading.Event()
@@ -143,7 +205,9 @@ def run_watcher(session_id: str, project_path: str, tracecode_dir: Path) -> None
     signal.signal(signal.SIGINT, _handle_signal)
 
     with open(output_path, "a", buffering=1) as output_file:
-        handler = FileChangeHandler(project_path, output_file)
+        handler = FileChangeHandler(
+            project_path, output_file, session_id=session_id, db_path=db_path
+        )
         observer = Observer()
         observer.schedule(handler, project_path, recursive=True)
         observer.start()

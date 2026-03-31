@@ -182,6 +182,7 @@ def compute_anomalies(
     session: dict,
     file_touches: list[dict],
     risky_commands: list[dict],
+    session_events: list[dict] | None = None,
 ) -> list[dict]:
     """
     Return detected anomalies as a list of dicts, each with:
@@ -249,6 +250,23 @@ def compute_anomalies(
     if diff_lines is not None and diff_lines > 500:
         add("large_diff", "Unusually large changeset",
             f"{diff_lines:,} lines changed — review carefully", "minor")
+
+    # ── minor: runtime checkpoint ────────────────────────────────────────────
+
+    if session_events:
+        checkpoint_types = {"blast_radius", "file_churn", "risky_accumulation"}
+        fired = [e for e in session_events if e.get("event_type") in checkpoint_types]
+        if fired:
+            type_labels = {
+                "blast_radius": "blast radius spike",
+                "file_churn": "file churn",
+                "risky_accumulation": "risky command accumulation",
+            }
+            detail = " · ".join(
+                type_labels[e["event_type"]] for e in fired if e["event_type"] in type_labels
+            )
+            add("runtime_checkpoint", "Runtime checkpoint triggered",
+                f"Live trust layer flagged: {detail}", "minor")
 
     # ── caution ──────────────────────────────────────────────────────────────
 

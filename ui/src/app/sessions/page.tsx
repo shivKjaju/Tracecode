@@ -307,6 +307,19 @@ function SessionDetailInner() {
         catastrophicCount={session.catastrophic_count}
       />
 
+      {/* 1b. Runtime flags — compact summary row, shown only when events fired */}
+      {(session.checkpoint_fired || session.runtime_warning_count > 0) && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded border border-[#e08030]/25 bg-[#2e1a06]/30 text-sm text-[var(--muted)]">
+          <span className="text-[#e08030] text-xs shrink-0">⚡</span>
+          <span>
+            {session.checkpoint_fired && "Checkpoint triggered during session"}
+            {session.checkpoint_fired && session.runtime_warning_count > 0 && " · "}
+            {session.runtime_warning_count > 0 &&
+              `${session.runtime_warning_count} sensitive file warning${session.runtime_warning_count > 1 ? "s" : ""}`}
+          </span>
+        </div>
+      )}
+
       {/* 2. Anomalies */}
       {(anomalies.length > 0 || session.risky_commands.length > 0) && (
         <div className="space-y-3">

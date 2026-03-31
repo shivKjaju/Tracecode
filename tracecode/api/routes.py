@@ -23,6 +23,7 @@ from tracecode.api.schemas import (
     OutcomeSignal,
     PatchSessionRequest,
     RiskyCommandOut,
+    RuntimeEventOut,
     SessionDetail,
     SessionListResponse,
     SessionSummary,
@@ -35,6 +36,7 @@ from tracecode.db import (
     get_file_touches,
     get_risky_commands,
     get_session,
+    get_session_events,
     list_sessions,
     update_session,
 )
@@ -165,14 +167,21 @@ def get_session_route(session_id: str, config=Depends(_config)):
         touches = get_file_touches(conn, session_id)
         risks = get_risky_commands(conn, session_id)
         risk_counts = count_risky_commands(conn, session_id)
+        runtime_events_raw = get_session_events(conn, session_id)
 
     from tracecode.analysis.scoring import (
         compute_anomalies, compute_outcome_signals, compute_verdict,
     )
     signals   = [OutcomeSignal(**s) for s in compute_outcome_signals(row)]
-    anomalies = compute_anomalies(row, touches, risks)
+    anomalies = compute_anomalies(row, touches, risks, runtime_events_raw)
     verdict   = row.get("verdict") or compute_verdict(
         risk_counts["catastrophic"], risk_counts["risky"], anomalies
+    )
+
+    _checkpoint_types = {"blast_radius", "file_churn", "risky_accumulation"}
+    checkpoint_fired = any(e["event_type"] in _checkpoint_types for e in runtime_events_raw)
+    runtime_warning_count = sum(
+        1 for e in runtime_events_raw if e["event_type"] == "sensitive_file_warned"
     )
 
     summary = _session_to_summary(row, risk_counts)
@@ -186,6 +195,9 @@ def get_session_route(session_id: str, config=Depends(_config)):
         risky_commands=[_risk_to_out(r) for r in risks],
         outcome_signals=signals,
         anomalies=[Anomaly(**a) for a in anomalies],
+        runtime_events=[RuntimeEventOut(**e) for e in runtime_events_raw],
+        checkpoint_fired=checkpoint_fired,
+        runtime_warning_count=runtime_warning_count,
     )
 
 
@@ -245,14 +257,21 @@ def patch_session_route(
         touches = get_file_touches(conn, session_id)
         risks = get_risky_commands(conn, session_id)
         risk_counts = count_risky_commands(conn, session_id)
+        runtime_events_raw = get_session_events(conn, session_id)
 
     from tracecode.analysis.scoring import (
         compute_anomalies, compute_outcome_signals, compute_verdict,
     )
     signals   = [OutcomeSignal(**s) for s in compute_outcome_signals(row)]
-    anomalies = compute_anomalies(row, touches, risks)
+    anomalies = compute_anomalies(row, touches, risks, runtime_events_raw)
     verdict   = row.get("verdict") or compute_verdict(
         risk_counts["catastrophic"], risk_counts["risky"], anomalies
+    )
+
+    _checkpoint_types = {"blast_radius", "file_churn", "risky_accumulation"}
+    checkpoint_fired = any(e["event_type"] in _checkpoint_types for e in runtime_events_raw)
+    runtime_warning_count = sum(
+        1 for e in runtime_events_raw if e["event_type"] == "sensitive_file_warned"
     )
 
     summary = _session_to_summary(row, risk_counts)
@@ -265,4 +284,7 @@ def patch_session_route(
         risky_commands=[_risk_to_out(r) for r in risks],
         outcome_signals=signals,
         anomalies=[Anomaly(**a) for a in anomalies],
+        runtime_events=[RuntimeEventOut(**e) for e in runtime_events_raw],
+        checkpoint_fired=checkpoint_fired,
+        runtime_warning_count=runtime_warning_count,
     )

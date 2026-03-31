@@ -180,6 +180,17 @@ def cmd_guard() -> None:
     run()
 
 
+@cli.command("checkpoint")
+def cmd_checkpoint() -> None:
+    """
+    Claude Code PostToolUse hook — surfaces runtime checkpoint events to Claude.
+    Reads unnotified session_events, prints warnings to stdout, marks as notified.
+    Install with: tracecode install-guard
+    """
+    from tracecode.checkpoint import run
+    run()
+
+
 @cli.command("install-guard")
 def cmd_install_guard() -> None:
     """
@@ -199,22 +210,42 @@ def cmd_install_guard() -> None:
     else:
         settings = {}
 
-    guard_cmd = str(Path.home() / ".tracecode" / "venv" / "bin" / "tracecode") + " guard"
-    hook_entry = {"type": "command", "command": guard_cmd}
-    pre_tool_use = settings.setdefault("hooks", {}).setdefault("PreToolUse", [])
+    tracecode_bin = str(Path.home() / ".tracecode" / "venv" / "bin" / "tracecode")
+    guard_cmd = tracecode_bin + " guard"
+    checkpoint_cmd = tracecode_bin + " checkpoint"
 
-    # Check if already installed
-    for entry in pre_tool_use:
-        if entry.get("matcher") == "Bash":
-            for h in entry.get("hooks", []):
-                if "tracecode" in h.get("command", ""):
-                    click.echo("Guard already installed in ~/.claude/settings.json")
-                    return
+    hooks = settings.setdefault("hooks", {})
 
-    pre_tool_use.append({"matcher": "Bash", "hooks": [hook_entry]})
+    # --- PreToolUse: guard ---
+    pre_tool_use = hooks.setdefault("PreToolUse", [])
+    guard_installed = any(
+        "tracecode" in h.get("command", "") and "guard" in h.get("command", "")
+        for entry in pre_tool_use
+        if entry.get("matcher") == "Bash"
+        for h in entry.get("hooks", [])
+    )
+    if not guard_installed:
+        pre_tool_use.append({"matcher": "Bash", "hooks": [{"type": "command", "command": guard_cmd}]})
+
+    # --- PostToolUse: checkpoint ---
+    post_tool_use = hooks.setdefault("PostToolUse", [])
+    checkpoint_installed = any(
+        "tracecode" in h.get("command", "") and "checkpoint" in h.get("command", "")
+        for entry in post_tool_use
+        if entry.get("matcher") == "Bash"
+        for h in entry.get("hooks", [])
+    )
+    if not checkpoint_installed:
+        post_tool_use.append({"matcher": "Bash", "hooks": [{"type": "command", "command": checkpoint_cmd}]})
+
+    if guard_installed and checkpoint_installed:
+        click.echo("Guard and checkpoint already installed in ~/.claude/settings.json")
+        return
+
     settings_path.write_text(_json.dumps(settings, indent=2))
-    click.echo(f"Guard installed in {settings_path}")
-    click.echo("Claude Code will now warn before running dangerous bash commands.")
+    click.echo(f"Hooks installed in {settings_path}")
+    click.echo("  PreToolUse  → tracecode guard (blocks dangerous commands)")
+    click.echo("  PostToolUse → tracecode checkpoint (surfaces runtime warnings to Claude)")
 
 
 # ---------------------------------------------------------------------------
