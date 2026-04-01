@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Anomaly(BaseModel):
@@ -112,7 +112,7 @@ class DiffResponse(BaseModel):
 
 class PatchSessionRequest(BaseModel):
     manual_outcome: Literal["success", "partial", "abandoned"] | None = None
-    note: str | None = None
+    note: str | None = Field(None, max_length=10000)
     perceived_quality: int | None = None
 
 

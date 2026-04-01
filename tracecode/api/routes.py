@@ -12,6 +12,7 @@ Routes:
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -56,6 +57,13 @@ def _config():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _validate_session_id(session_id: str) -> None:
+    """Raise 400 if session_id is not a valid UUID. Prevents crafted path inputs."""
+    try:
+        UUID(session_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid session ID format")
 
 def _session_to_summary(row: dict, risk_counts: dict | None = None) -> SessionSummary:
     started = row.get("started_at") or 0
@@ -161,6 +169,7 @@ def list_sessions_route(
 
 @router.get("/sessions/{session_id}", response_model=SessionDetail)
 def get_session_route(session_id: str, config=Depends(_config)):
+    _validate_session_id(session_id)
     from tracecode.analysis.scoring import (
         compute_anomalies, compute_outcome_signals, compute_verdict, compute_review_first,
     )
@@ -220,6 +229,7 @@ def get_session_route(session_id: str, config=Depends(_config)):
 
 @router.get("/sessions/{session_id}/diff", response_model=DiffResponse)
 def get_diff_route(session_id: str, config=Depends(_config)):
+    _validate_session_id(session_id)
     with get_conn(config.db_path) as conn:
         row = get_session(conn, session_id)
     if row is None:
@@ -251,6 +261,7 @@ def patch_session_route(
     body: PatchSessionRequest,
     config=Depends(_config),
 ):
+    _validate_session_id(session_id)
     from tracecode.analysis.scoring import (
         compute_anomalies, compute_outcome_signals, compute_verdict, compute_review_first,
     )

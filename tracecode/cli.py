@@ -1,16 +1,16 @@
 """
 cli.py — Click command group and all CLI entrypoints.
 
-Day 1: `tracecode init` fully implemented.
-Day 2: `tracecode session-start` and `tracecode session-end` implemented.
-Days 3–6: remaining stubs will be filled in as each module is built.
-
-Usage:
-    tracecode init               # set up ~/.tracecode directory
-    tracecode session-start ...  # called by wrapper before claude launches
-    tracecode session-end ...    # called by wrapper after claude exits
-    tracecode watch ...          # filesystem watcher process (Day 3)
-    tracecode serve              # API + UI server (Day 6)
+Commands:
+    tracecode init               set up ~/.tracecode directory
+    tracecode doctor             verify installation health
+    tracecode session-start ...  called by wrapper before claude launches
+    tracecode session-end ...    called by wrapper after claude exits
+    tracecode watch ...          filesystem watcher (background process)
+    tracecode guard              PreToolUse hook — blocks dangerous commands
+    tracecode checkpoint         PostToolUse hook — surfaces live alerts
+    tracecode install-guard      register hooks in ~/.claude/settings.json
+    tracecode serve              start the API and UI server
 """
 
 import sys
@@ -115,17 +115,14 @@ def cmd_session_start(project: str, branch: str, commit: str) -> None:
 @cli.command("session-end")
 @click.option("--session-id", required=True, help="UUID returned by session-start")
 @click.option("--exit-code", type=int, default=0, help="Exit code of the claude process")
-@click.option("--project", default="", help="Project directory path (reserved for future use)")
-@click.option("--commit-before", default="", help="Git commit SHA at session start (reserved for future use)")
+@click.option("--project", default="", help="Project directory path")
+@click.option("--commit-before", default="", help="Git commit SHA at session start")
 def cmd_session_end(
     session_id: str, exit_code: int, project: str, commit_before: str
 ) -> None:
     """
     End a session and run the post-session analysis pipeline.
     Called by the wrapper script after claude exits.
-
-    Day 2: records ended_at and exit code only.
-    Days 3–5 will add watcher aggregation, git analysis, test detection, and scoring.
     """
     from tracecode.capture.session import end_session
 
@@ -146,7 +143,7 @@ def cmd_session_end(
 
 
 # ---------------------------------------------------------------------------
-# tracecode watch  (stub — implemented Day 3)
+# tracecode watch
 # ---------------------------------------------------------------------------
 
 @cli.command("watch")
@@ -299,7 +296,7 @@ def cmd_install_guard() -> None:
 
 
 # ---------------------------------------------------------------------------
-# tracecode serve  (implemented Day 6)
+# tracecode serve
 # ---------------------------------------------------------------------------
 
 @cli.command("serve")

@@ -317,27 +317,6 @@ def compute_verdict(
     return "trusted"
 
 
-_REVIEW_FIRST_SENSITIVE_EXACT = frozenset({
-    "package.json", "requirements.txt", "Gemfile", "Cargo.toml",
-    "go.mod", "pyproject.toml", "Dockerfile",
-})
-
-_REVIEW_FIRST_SENSITIVE_PATTERNS = [
-    re.compile(r'(^|[/\\])\.env(\.|$|[/\\])'),
-    re.compile(r'(^|[/\\])\.env$'),
-    re.compile(r'\.(pem|key|p12|pfx|crt|cer)$'),
-    re.compile(r'\.github[/\\]workflows[/\\]'),
-    re.compile(r'docker-compose'),
-    re.compile(r'(^|[/\\])secrets?\.(json|ya?ml|toml)$'),
-    re.compile(r'config\.(py|js|ts|json|ya?ml|toml|rb)$', re.I),
-    re.compile(r'settings\.(py|js|ts|json|ya?ml|toml)$', re.I),
-    re.compile(r'\.(yaml|yml|toml)$', re.I),
-    re.compile(r'requirements\.txt$'),
-    re.compile(r'package\.json$'),
-    re.compile(r'Dockerfile$'),
-]
-
-
 def compute_review_first(
     file_touches: list[dict],
     risky_commands: list[dict],
@@ -384,11 +363,7 @@ def compute_review_first(
                 score += 20
                 reasons.append(("unstable edits", 20))
 
-        name = file_path.replace("\\", "/").split("/")[-1]
-        if (
-            name in _REVIEW_FIRST_SENSITIVE_EXACT
-            or any(p.search(file_path) for p in _REVIEW_FIRST_SENSITIVE_PATTERNS)
-        ):
+        if is_sensitive_file(file_path):
             score += 25
             reasons.append(("config-sensitive", 25))
 
