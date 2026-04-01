@@ -15,7 +15,6 @@ Commands:
 
 import sys
 import click
-from pathlib import Path
 
 from tracecode.config import (
     DEFAULT_CONFIG_PATH,
@@ -33,7 +32,7 @@ from tracecode.db import init_db
 @click.group()
 @click.version_option(package_name="tracecode")
 def cli() -> None:
-    """Tracecode — personal AI coding session quality engine."""
+    """Tracecode — watches Claude Code sessions and tells you what to trust, review, or look at first."""
     pass
 
 
@@ -161,7 +160,6 @@ def cmd_watch(session_id: str, path: str) -> None:
     run_watcher(session_id, path, config.tracecode_dir)
 
 
-# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # tracecode guard  (PreToolUse hook for Claude Code)
 # ---------------------------------------------------------------------------

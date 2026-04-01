@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- Manual enrichment — never required, always optional
     manual_outcome       TEXT,           -- 'success' | 'partial' | 'abandoned' | NULL
     note                 TEXT,
-    perceived_quality    INTEGER         -- 1-5, dogfooding calibration only
+    perceived_quality    INTEGER         -- 1-5, user-assigned quality rating
 );
 
 CREATE TABLE IF NOT EXISTS file_touches (
@@ -416,10 +416,3 @@ def get_session_events(conn: sqlite3.Connection, session_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_unnotified_events(conn: sqlite3.Connection, session_id: str) -> list[dict]:
-    """Return session_events not yet sent to Claude, ordered by fired_at."""
-    rows = conn.execute(
-        "SELECT * FROM session_events WHERE session_id = ? AND notified = 0 ORDER BY fired_at ASC",
-        (session_id,),
-    ).fetchall()
-    return [dict(r) for r in rows]

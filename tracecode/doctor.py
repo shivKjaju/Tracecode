@@ -24,7 +24,6 @@ _HOME = Path.home()
 _TRACECODE_DIR = _HOME / ".tracecode"
 _BIN_DIR = _TRACECODE_DIR / "bin"
 _WRAPPER = _BIN_DIR / "claude"
-_VENV_TRACECODE = _TRACECODE_DIR / "venv" / "bin" / "tracecode"
 _SETTINGS_PATH = _HOME / ".claude" / "settings.json"
 
 

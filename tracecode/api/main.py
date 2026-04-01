@@ -44,7 +44,7 @@ UI_OUT = _REPO_ROOT / "ui" / "out"
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Tracecode",
-        description="Personal AI coding session quality engine",
+        description="Watches Claude Code sessions and tells you what to trust, review, or look at first.",
         version="0.1.0",
         docs_url="/api/docs",
         redoc_url=None,

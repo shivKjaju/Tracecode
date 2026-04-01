@@ -142,7 +142,7 @@ class TestEndSession:
         assert row["claude_exit_code"] == 1
 
     def test_scores_computed_after_end_session(self, config: Config, tmp_path: Path) -> None:
-        # Day 5: scoring is live. All score fields should be populated after end_session.
+        # All score fields should be populated after end_session.
         session_id = start_session(str(tmp_path), None, None, config)
         end_session(session_id, 0, config)
         with get_conn(config.db_path) as conn:
