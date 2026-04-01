@@ -265,13 +265,13 @@ def compute_anomalies(
             detail = " · ".join(
                 type_labels[e["event_type"]] for e in fired if e["event_type"] in type_labels
             )
-            add("runtime_checkpoint", "Runtime checkpoint triggered",
-                f"Live trust layer flagged: {detail}", "minor")
+            add("runtime_checkpoint", "Live alert fired",
+                f"Runtime flags during session: {detail}", "minor")
 
     # ── caution ──────────────────────────────────────────────────────────────
 
     if session.get("test_outcome") is None and session.get("ended_at") is not None:
-        add("no_tests", "No test signal detected",
+        add("no_tests", "Tests not checked",
             "No test runner output found for this session", "caution")
 
     return results

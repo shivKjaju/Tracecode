@@ -84,13 +84,30 @@ export default function FeedPage() {
       {loading ? (
         <div className="text-sm text-[var(--muted)] py-12 text-center">Loading…</div>
       ) : sessions.length === 0 ? (
-        <div className="text-sm text-[var(--muted)] py-12 text-center">
-          No sessions yet. Run{" "}
-          <code className="font-mono text-[var(--accent)]">claude</code> in any
-          project to get started.
+        <div className="py-16 text-center space-y-4">
+          <p className="text-sm font-medium text-[var(--text)]">No sessions yet</p>
+          <p className="text-sm text-[var(--muted)]">
+            Tracecode records Claude sessions automatically.
+            <br />
+            Run Claude in any project, then come back here.
+          </p>
+          <div className="inline-block text-left mt-2 px-4 py-3 rounded border border-[var(--border)] bg-[var(--surface)]">
+            <code className="block text-xs font-mono text-[var(--muted)]">$ cd your-project</code>
+            <code className="block text-xs font-mono text-[var(--text)]">$ claude</code>
+          </div>
+          <p className="text-xs text-[var(--muted)] opacity-60 mt-2">
+            Want to verify setup?{" "}
+            <code className="font-mono">tracecode doctor</code>
+          </p>
         </div>
       ) : (
         <>
+          {total === 1 && (
+            <div className="mb-4 px-4 py-3 rounded border border-[var(--border)] bg-[var(--surface)] text-sm text-[var(--muted)]">
+              Your first session was recorded. Click the row to see the trust verdict and what to inspect first.
+            </div>
+          )}
+
           <div className="rounded border border-[var(--border)] overflow-hidden">
             {sessions.map((s, i) => (
               <Link

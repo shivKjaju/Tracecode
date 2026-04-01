@@ -19,10 +19,10 @@ import { DiffViewer } from "@/components/DiffViewer";
 
 const VERDICT_SUMMARY: Record<string, string> = {
   trusted:              "All signals clear. Safe to continue.",
-  trusted_with_caveats: "Minor signals worth a quick look. Scan the notes before closing.",
+  trusted_with_caveats: "Minor signals worth a quick look. Scan the issues section before closing.",
   review_required:      "Review flagged commands and changed files before continuing.",
   high_risk:            "Do not merge or deploy until you have reviewed every flagged item below.",
-  blocked:              "Treat all outputs as untrusted. Audit every change before use.",
+  blocked:              "Treat outputs as untrusted. Audit every change before use.",
 };
 
 const VERDICT_BORDER: Record<string, string> = {
@@ -151,7 +151,7 @@ function AnomalyList({ anomalies, session }: {
   return (
     <div className="rounded border border-[var(--border)] bg-[var(--surface)] p-4">
       <p className="text-xs text-[var(--muted)] uppercase tracking-wider mb-3">
-        Anomalies
+        Issues
       </p>
       <div className="space-y-2">
         {anomalies.map((a) => (
@@ -417,9 +417,9 @@ function SessionDetailInner() {
         )}
       </div>
 
-      {/* 4. Evidence — collapsed group */}
+      {/* 4. Session details — collapsed group */}
       <div className="space-y-2">
-        <p className="text-xs text-[var(--muted)] uppercase tracking-wider px-1">Evidence</p>
+        <p className="text-xs text-[var(--muted)] uppercase tracking-wider px-1">Session details</p>
 
         {/* Files touched */}
         <details className="rounded border border-[var(--border)] bg-[var(--surface)] group">
@@ -443,7 +443,7 @@ function SessionDetailInner() {
         {/* Raw data */}
         <details className="rounded border border-[var(--border)] bg-[var(--surface)] group">
           <summary className="px-4 py-3 text-xs text-[var(--muted)] uppercase tracking-wider cursor-pointer select-none hover:text-[var(--text)] transition-colors list-none flex items-center justify-between">
-            <span>Raw data</span>
+            <span>Session data</span>
             <span className="opacity-40 group-open:rotate-180 transition-transform inline-block">▾</span>
           </summary>
           <div className="px-4 pb-4">
@@ -504,7 +504,7 @@ function SessionDetailInner() {
         {/* Annotate */}
         <details className="rounded border border-[var(--border)] bg-[var(--surface)] group">
           <summary className="px-4 py-3 text-xs text-[var(--muted)] cursor-pointer select-none hover:text-[var(--text)] transition-colors list-none flex items-center justify-between">
-            <span>Annotate this session</span>
+            <span>Your notes</span>
             <span className="opacity-40 group-open:rotate-180 transition-transform inline-block">▾</span>
           </summary>
           <div className="px-4 pb-4 space-y-3">

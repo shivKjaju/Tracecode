@@ -25,7 +25,7 @@ const VERDICT_CONFIG: Record<string, { label: string; cls: string }> = {
     cls: "bg-[#2e2c06] text-[#d4b84a] border border-[#d4b84a]/40",
   },
   review_required: {
-    label: "Review Required",
+    label: "Needs Review",
     cls: "bg-[#2e1a06] text-[#e08030] border border-[#e08030]/40",
   },
   high_risk: {

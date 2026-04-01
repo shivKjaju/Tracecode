@@ -191,6 +191,56 @@ def cmd_checkpoint() -> None:
     run()
 
 
+@cli.command("doctor")
+def cmd_doctor() -> None:
+    """Check that Tracecode is correctly installed and active."""
+    from tracecode.doctor import run_checks
+
+    checks = run_checks()
+    failed = [c for c in checks if not c.passed]
+
+    click.echo()
+    for c in checks:
+        icon = "✓" if c.passed else "✗"
+        label_col = f"{c.label:<20}"
+        line = f"  {icon}  {label_col} {c.detail}"
+        if c.passed:
+            click.echo(line)
+        else:
+            click.echo(click.style(line, fg="red"))
+
+    click.echo()
+
+    if not failed:
+        click.echo(click.style("  All checks passed. Tracecode is active.", fg="green"))
+        click.echo()
+        click.echo("  Next step: run claude in any project, then open Tracecode to review the session.")
+        click.echo("    tracecode serve")
+        click.echo()
+        sys.exit(0)
+
+    # Group hints by unique hint text so identical fixes print once
+    hints_seen: set[str] = set()
+    for c in failed:
+        if c.hint and c.hint not in hints_seen:
+            hints_seen.add(c.hint)
+            click.echo(click.style("  Fix:", fg="yellow"))
+            for line in c.hint.splitlines():
+                click.echo(f"    {line}")
+            click.echo()
+
+    n = len(failed)
+    click.echo(
+        click.style(
+            f"  {n} check{'s' if n != 1 else ''} failed."
+            "  Run `tracecode doctor` again after fixing.",
+            fg="red",
+        )
+    )
+    click.echo()
+    sys.exit(1)
+
+
 @cli.command("install-guard")
 def cmd_install_guard() -> None:
     """
