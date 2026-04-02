@@ -7,8 +7,8 @@ All functions:
   - return None / False on any failure — never raise
   - have a short timeout so a slow git never blocks a session
 
-These are read-only queries used at session boundaries (start and end).
-Heavier post-session analysis (diffs, commit counting) will be added in Day 4.
+These are read-only queries. They do not modify the repo in any way.
+Used at session start (branch/commit capture) and session end (diff, dirty state).
 """
 
 import re

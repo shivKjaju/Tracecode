@@ -82,8 +82,15 @@ def end_session(
     wrapper's environment) or read back from the DB row if not supplied.
     """
 
+    # Each step below is wrapped in its own try/except.
+    # This is intentional: if git analysis fails, scoring should still run.
+    # If scoring fails, the verdict should still be attempted.
+    # A broken analysis step silently logs a warning and moves on — it never
+    # surfaces as an error to the developer after their claude session ends.
+
     # ------------------------------------------------------------------
-    # Step 1: Record ended_at immediately — most important update
+    # Step 1: Record ended_at immediately — most important update.
+    # If everything else fails, at least we know when the session ended.
     # ------------------------------------------------------------------
     now = int(time.time())
     with get_conn(config.db_path) as conn:

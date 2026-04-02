@@ -31,8 +31,24 @@ from watchdog.observers import Observer
 
 
 # ---------------------------------------------------------------------------
-# Ignore lists — applied at watch time (obvious noise only)
+# Ignore lists — two tiers, applied at different times
 # ---------------------------------------------------------------------------
+#
+# Why two tiers?
+#
+# TIER 1 — watch-time (applied inside FileChangeHandler._should_ignore):
+#   Filters events as they arrive from the OS. Only catches obvious noise like
+#   compiled bytecode, editor swap files, and build artifact directories.
+#   We want this to be fast and permissive — it's cheaper to log an extra event
+#   and discard it later than to miss a real file change.
+#
+# TIER 2 — aggregation-time (_is_transient + gitignore check, applied in
+#   aggregate_watch_file after the session ends):
+#   A second, more careful pass that removes lock files and generated files.
+#   These ARE real filesystem writes, but they carry no signal about what the
+#   agent was thinking — package-lock.json changes when you install anything.
+#   We also run `git check-ignore` here to respect the project's own .gitignore.
+#   We can afford to be thorough here because it runs once, not per-event.
 
 IGNORE_DIRS: frozenset[str] = frozenset({
     ".git", "node_modules", "__pycache__", ".next", "dist",
@@ -46,12 +62,12 @@ IGNORE_EXTENSIONS: frozenset[str] = frozenset({
     ".pyc", ".pyo", ".pyd",
     # Editor swap / backup
     ".swp", ".swo", ".orig", ".bak",
-    # macOS
-    ".DS_Store",
     # Compiled objects
     ".o", ".so", ".dylib", ".class",
     # Source maps
     ".map",
+    # macOS metadata — also covered by IGNORE_NAMES for the bare filename
+    ".ds_store",
 })
 
 IGNORE_NAMES: frozenset[str] = frozenset({
@@ -59,8 +75,8 @@ IGNORE_NAMES: frozenset[str] = frozenset({
     "Thumbs.db",
 })
 
-# Extensions filtered at aggregation time (in addition to IGNORE_EXTENSIONS).
-# These are lock / generated files that are real edits but not meaningful signal.
+# Tier 2: lock files and generated files — filtered at aggregation time.
+# These are real filesystem writes but carry no useful signal about agent behaviour.
 _AGGREGATION_IGNORE_EXTENSIONS: frozenset[str] = frozenset({
     ".lock",           # package-lock.json, Pipfile.lock, poetry.lock
     ".d.ts",           # generated TypeScript declarations
@@ -138,21 +154,30 @@ class FileChangeHandler(FileSystemEventHandler):
         self._path_counts[rel_path] = self._path_counts.get(rel_path, 0) + 1
         self._recent_events.append((now_ms, rel_path))
 
-        # Sensitive file — warn on first touch per unique path
+        # Sensitive file — fire a warning the first time a .env / config / cert
+        # file is touched. The _sensitive_warned set prevents duplicate alerts
+        # if the same file is modified multiple times in the same session.
         from tracecode.analysis.scoring import is_sensitive_file
         if is_sensitive_file(rel_path) and rel_path not in self._sensitive_warned:
             self._sensitive_warned.add(rel_path)
             self._write_event("sensitive_file_warned", {"file_path": rel_path})
 
-        # File churn — more than 5 touches on the same file
+        # File churn — same file touched more than 5 times.
+        # 5 is the threshold because 2-3 touches is normal iterative editing;
+        # 6+ touches on the same file in one session usually means the agent
+        # is stuck in a loop or repeatedly reverting its own changes.
         count = self._path_counts[rel_path]
         if count > 5 and rel_path not in self._path_churn_warned:
             self._path_churn_warned.add(rel_path)
             self._write_event("file_churn", {"file_path": rel_path, "touch_count": count})
 
-        # Blast radius — more than 15 unique files in the last 90 seconds (fires once)
+        # Blast radius — more than 15 unique files touched in the last 90 seconds.
+        # This fires once per session (not per event) to avoid alert fatigue.
+        # 15 files / 90s is a conservative threshold — normal development touches
+        # 1-5 files at a time; 15+ in 90s typically means the agent is doing
+        # a broad search-and-replace or has lost its scope.
         if not self._blast_radius_fired:
-            cutoff = now_ms - 90_000
+            cutoff = now_ms - 90_000  # 90 seconds ago in milliseconds
             while self._recent_events and self._recent_events[0][0] < cutoff:
                 self._recent_events.popleft()
             unique_recent = len({p for _, p in self._recent_events})

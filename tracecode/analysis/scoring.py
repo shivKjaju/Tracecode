@@ -4,10 +4,19 @@ analysis/scoring.py — Session quality score computations.
 All functions are pure: no I/O, no DB access, no side effects.
 Input is plain Python values. Output is a plain dict or a single value.
 
+How the numbers fit together
+────────────────────────────
+  1. compute_wandering_score()   — how focused was the session? (0 = focused, 1 = thrashing)
+  2. compute_outcome_score()     — did it produce working, committed code? (0–4 points)
+  3. compute_quality_score()     — combine the above into a single 0.0–1.0 score
+  4. classify_outcome()          — map the score to a label (success / partial / incomplete)
+  5. compute_anomalies()         — detect specific problems (tests failed, dirty tree, etc.)
+  6. compute_verdict()           — final trust verdict from commands + anomalies
+  7. compute_review_first()      — rank files by how much they deserve a manual look
+
 Scoring philosophy:
   - Simple heuristics, not ML
   - Directionally correct > precisely wrong
-  - Formula weights will be adjusted after dogfooding
   - When a signal is unavailable, it is omitted cleanly (not zeroed)
 """
 
@@ -66,30 +75,34 @@ def compute_quality_score(
     """
     Composite quality score 0.0–1.0.
 
-    When persistence is reliable (3-signal variant):
-        outcome   55%   primary signal
-        wandering 25%   efficiency signal
-        persists  20%   agent acceptance signal
+    Uses two variants depending on whether persistence data is trustworthy:
 
-    When persistence is unreliable or unavailable (2-signal variant):
-        outcome   60%
-        wandering 40%
+    3-signal variant (when persistence is reliable):
+        outcome_score / 4   × 55%   — primary: did it produce working committed code?
+        1 - wandering_score × 25%   — efficiency: was the session focused or thrashing?
+        persistence_rate    × 20%   — survival: did the edits actually stick in git?
 
-    The denominator for outcome_score is always 4 (maximum possible points)
-    regardless of how many signals were actually available. This keeps the
-    scale consistent across sessions with different data completeness.
+    2-signal variant (when persistence is unreliable or unavailable):
+        outcome_score / 4   × 60%
+        1 - wandering_score × 40%
+
+    outcome_score is always divided by 4 (the maximum possible points) so the
+    scale stays consistent across sessions where fewer signals were available.
+
+    Note: wandering_score is inverted (1 - score) because a LOW wandering score
+    is good (focused session), and we want high quality to mean high number.
     """
     if persistence_reliable and persistence_rate is not None:
         return round(
-            (outcome_score / 4.0) * 0.55
-            + (1.0 - wandering_score) * 0.25
-            + persistence_rate * 0.20,
+            (outcome_score / 4.0) * 0.55   # did the session produce results?
+            + (1.0 - wandering_score) * 0.25  # was it focused?
+            + persistence_rate * 0.20,        # did the edits survive?
             3,
         )
     else:
         return round(
-            (outcome_score / 4.0) * 0.60
-            + (1.0 - wandering_score) * 0.40,
+            (outcome_score / 4.0) * 0.60   # did the session produce results?
+            + (1.0 - wandering_score) * 0.40, # was it focused?
             3,
         )
 
@@ -294,13 +307,20 @@ def compute_verdict(
         "blocked" | "high_risk" | "review_required" |
         "trusted_with_caveats" | "trusted"
 
-    Verdict rules (quality_score is NOT used):
-        blocked               — any catastrophic command fired
-        high_risk             — risky command + at least 1 major anomaly
-                                OR 3+ major anomalies (no risky command needed)
-        review_required       — any risky command OR 2+ major anomalies
-        trusted_with_caveats  — 1 major OR any minor anomaly
-        trusted               — all clear (caution-only does not affect verdict)
+    Why quality_score is NOT used here:
+        quality_score is a diagnostic number for display — it tells you how
+        well the session went, but it doesn't answer "should I trust this?"
+        Verdicts are gates, not grades. A session can score 0.4 quality but
+        still be trusted (e.g. exploratory chat with no commits). A session
+        can score 0.8 quality but be blocked (catastrophic command was attempted).
+
+    Verdict rules:
+        blocked               — any catastrophic command fired (rm -rf /, etc.)
+        high_risk             — (risky command AND a major anomaly)
+                                OR 3+ major anomalies on their own
+        review_required       — any risky command used OR 2+ major anomalies
+        trusted_with_caveats  — 1 major anomaly OR any minor anomaly
+        trusted               — nothing notable (caution-only anomalies are informational)
     """
     if catastrophic_count > 0:
         return "blocked"
@@ -339,6 +359,8 @@ def compute_review_first(
     Returns up to max_files files sorted by score descending.
     Suppressed entirely when verdict is 'trusted' and no HIGH-priority files exist.
     """
+    # Build a single string of all flagged command text so we can check if a
+    # file path appears in any risky command (e.g. "rm -rf ./src/auth.py").
     risky_cmd_text = " ".join(r.get("command", "") for r in risky_commands)
 
     results: list[dict] = []
@@ -347,38 +369,52 @@ def compute_review_first(
         touch_count = int(ft.get("touch_count") or 0)
         persisted = ft.get("persisted")  # 1 = yes, 0 = no, None = unknown
 
+        # Accumulate a score from multiple signals.
+        # Higher score = more worth reviewing.
         score = 0
-        reasons: list[tuple[str, int]] = []
+        reasons: list[tuple[str, int]] = []  # (reason_label, weight)
 
+        # The file actually made it into git — real change, worth reviewing
         if persisted == 1:
             score += 30
             reasons.append(("persisted", 30))
 
+        # File touched 3+ times — either the agent was iterating on it
+        # (good: repeated edits that survived) or thrashing (bad: edits that reverted)
         if touch_count >= 3:
             if persisted == 1:
                 score += 20
                 reasons.append(("repeated edits", 20))
             else:
-                # Thrashed but didn't survive — worth inspecting
+                # Touched many times but nothing survived — signals the agent
+                # may have been stuck or the approach was abandoned
                 score += 20
                 reasons.append(("unstable edits", 20))
 
+        # Config/secrets/CI files are always worth a look regardless of other signals
         if is_sensitive_file(file_path):
             score += 25
             reasons.append(("config-sensitive", 25))
 
+        # The file path appears in a risky command string (e.g. sudo rm src/auth.py)
         if file_path in risky_cmd_text:
             score += 15
             reasons.append(("in flagged command", 15))
 
+        # File persisted AND there was a meaningful diff — it contributed real change
         if persisted == 1 and (diff_lines or 0) > 0:
             score += 10
             reasons.append(("in final diff", 10))
 
+        # Minimum threshold: a file needs at least one meaningful signal to be listed.
+        # Score 20 = at least one medium-weight reason (e.g. persisted OR config file).
+        # Below this the file is noise — too low signal to surface.
         if score < 20:
             continue
 
+        # Show the top 2 reasons (sorted by weight) so the UI is not overwhelming
         top_reasons = [r[0] for r in sorted(reasons, key=lambda x: -x[1])][:2]
+        # HIGH = score ≥ 50 means at least two strong signals (e.g. persisted + sensitive)
         priority = "HIGH" if score >= 50 else "MEDIUM"
 
         results.append({

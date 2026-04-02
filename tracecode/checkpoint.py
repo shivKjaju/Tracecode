@@ -93,8 +93,14 @@ def run() -> None:
                     (row["id"],),
                 )
 
-            # 2. Risky accumulation — derived from risky_commands, not watcher
-            #    Only fires once: check whether we already recorded this event
+            # 2. Risky accumulation — handled separately from the watcher events above.
+            #
+            # Why separately? The watcher fires session_events for filesystem activity
+            # (blast radius, file churn, sensitive file touched). Risky commands come
+            # from a different source: the guard hook writes to the risky_commands table,
+            # not session_events. So we query risky_commands directly here and synthesise
+            # a session_event for it — that way it gets the same "fire once" deduplication
+            # and the same notified flag as all other checkpoint events.
             already_fired = conn.execute(
                 "SELECT 1 FROM session_events"
                 " WHERE session_id = ? AND event_type = 'risky_accumulation'",
