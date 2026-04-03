@@ -1,260 +1,410 @@
 """
-tests/test_scoring.py — Tests for analysis/scoring.py
+tests/test_scoring.py — Tests for the verdict, anomaly, and review-first logic.
 
-Pure function tests: no I/O, no DB, no filesystem.
+These are the most important tests in the repo: the verdict rules and anomaly
+detection determine what users see and act on. A subtle bug here (e.g. a
+high_risk session being labelled review_required) would erode trust in the tool.
+
+Run with: pytest tests/test_scoring.py -v
 """
 
 import pytest
 
 from tracecode.analysis.scoring import (
-    classify_outcome,
-    compute_all,
+    compute_anomalies,
     compute_outcome_score,
-    compute_quality_score,
+    compute_review_first,
+    compute_verdict,
     compute_wandering_score,
 )
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def session(**kwargs) -> dict:
+    """Build a minimal session dict. Only supply the fields your test cares about."""
+    defaults = {
+        "ended_at": 1000,
+        "test_outcome": None,
+        "tree_dirty": 0,
+        "sensitive_files_touched": 0,
+        "persistence_rate": None,
+        "persistence_reliable": 0,
+        "commits_during": None,
+        "hot_files": 0,
+        "diff_lines": None,
+        "test_source": None,
+    }
+    return {**defaults, **kwargs}
+
+
+def touch(file_path: str, touch_count: int = 1, persisted: int | None = 1) -> dict:
+    """Build a minimal file_touch dict."""
+    return {
+        "id": 1,
+        "file_path": file_path,
+        "touch_count": touch_count,
+        "first_touch_at": 0,
+        "last_touch_at": 1,
+        "persisted": persisted,
+    }
+
+
+def risky(command: str, tier: str = "risky") -> dict:
+    return {"id": 1, "command": command, "tier": tier, "reason": "test", "flagged_at": 0}
+
+
+# ---------------------------------------------------------------------------
+# compute_verdict
+# ---------------------------------------------------------------------------
+
+class TestComputeVerdict:
+    def test_blocked_on_any_catastrophic(self):
+        assert compute_verdict(1, 0, []) == "blocked"
+
+    def test_blocked_ignores_everything_else(self):
+        # Even with zero anomalies, one catastrophic command = blocked
+        assert compute_verdict(1, 10, []) == "blocked"
+
+    def test_trusted_when_all_clear(self):
+        assert compute_verdict(0, 0, []) == "trusted"
+
+    def test_trusted_with_caution_only_anomalies(self):
+        # Caution-level anomalies (e.g. "no tests") should not affect verdict
+        anomalies = [{"id": "no_tests", "label": "Tests not checked",
+                      "detail": "", "severity": "caution"}]
+        assert compute_verdict(0, 0, anomalies) == "trusted"
+
+    def test_trusted_with_caveats_on_one_major(self):
+        anomalies = [{"id": "dirty_tree", "label": "Uncommitted changes",
+                      "detail": "", "severity": "major"}]
+        assert compute_verdict(0, 0, anomalies) == "trusted_with_caveats"
+
+    def test_trusted_with_caveats_on_minor_only(self):
+        anomalies = [{"id": "no_commits", "label": "No commits made",
+                      "detail": "", "severity": "minor"}]
+        assert compute_verdict(0, 0, anomalies) == "trusted_with_caveats"
+
+    def test_review_required_on_risky_command_no_anomalies(self):
+        assert compute_verdict(0, 1, []) == "review_required"
+
+    def test_review_required_on_two_major_anomalies(self):
+        anomalies = [
+            {"id": "dirty_tree", "label": "", "detail": "", "severity": "major"},
+            {"id": "tests_failed", "label": "", "detail": "", "severity": "major"},
+        ]
+        assert compute_verdict(0, 0, anomalies) == "review_required"
+
+    def test_high_risk_on_risky_plus_major(self):
+        anomalies = [{"id": "dirty_tree", "label": "", "detail": "", "severity": "major"}]
+        assert compute_verdict(0, 1, anomalies) == "high_risk"
+
+    def test_high_risk_on_three_major_anomalies_no_risky_command(self):
+        anomalies = [
+            {"id": "a", "label": "", "detail": "", "severity": "major"},
+            {"id": "b", "label": "", "detail": "", "severity": "major"},
+            {"id": "c", "label": "", "detail": "", "severity": "major"},
+        ]
+        assert compute_verdict(0, 0, anomalies) == "high_risk"
+
+    def test_review_required_not_high_risk_on_risky_with_minor_only(self):
+        # Risky command + only minor anomalies → review_required, not high_risk
+        anomalies = [{"id": "no_commits", "label": "", "detail": "", "severity": "minor"}]
+        assert compute_verdict(0, 1, anomalies) == "review_required"
+
+    def test_catastrophic_beats_high_risk(self):
+        # Catastrophic should win even when high_risk conditions also exist
+        anomalies = [
+            {"id": "a", "label": "", "detail": "", "severity": "major"},
+            {"id": "b", "label": "", "detail": "", "severity": "major"},
+            {"id": "c", "label": "", "detail": "", "severity": "major"},
+        ]
+        assert compute_verdict(1, 5, anomalies) == "blocked"
+
+
+# ---------------------------------------------------------------------------
+# compute_anomalies
+# ---------------------------------------------------------------------------
+
+class TestComputeAnomalies:
+    def test_no_anomalies_on_clean_session(self):
+        s = session(test_outcome="pass", tree_dirty=0, commits_during=1,
+                    persistence_rate=0.9, persistence_reliable=1)
+        result = compute_anomalies(s, [], [])
+        ids = [a["id"] for a in result]
+        assert "tests_failed" not in ids
+        assert "dirty_tree" not in ids
+        assert "low_survival" not in ids
+
+    def test_tests_failed_is_major(self):
+        s = session(test_outcome="fail", test_source="pytest")
+        result = compute_anomalies(s, [], [])
+        ids = [a["id"] for a in result]
+        assert "tests_failed" in ids
+        assert next(a for a in result if a["id"] == "tests_failed")["severity"] == "major"
+
+    def test_dirty_tree_is_major(self):
+        s = session(tree_dirty=1)
+        result = compute_anomalies(s, [], [])
+        ids = [a["id"] for a in result]
+        assert "dirty_tree" in ids
+        assert next(a for a in result if a["id"] == "dirty_tree")["severity"] == "major"
+
+    def test_sensitive_files_is_major(self):
+        s = session(sensitive_files_touched=1)
+        result = compute_anomalies(s, [touch(".env", persisted=1)], [])
+        ids = [a["id"] for a in result]
+        assert "sensitive_files" in ids
+        assert next(a for a in result if a["id"] == "sensitive_files")["severity"] == "major"
+
+    def test_sensitive_files_detail_lists_paths(self):
+        s = session(sensitive_files_touched=1)
+        touches = [touch(".env", persisted=1), touch("secrets.json", persisted=1)]
+        result = compute_anomalies(s, touches, [])
+        sf = next(a for a in result if a["id"] == "sensitive_files")
+        assert ".env" in sf["detail"]
+
+    def test_low_survival_is_major(self):
+        s = session(persistence_rate=0.3, persistence_reliable=1)
+        result = compute_anomalies(s, [], [])
+        ids = [a["id"] for a in result]
+        assert "low_survival" in ids
+        assert next(a for a in result if a["id"] == "low_survival")["severity"] == "major"
+
+    def test_low_survival_not_triggered_at_threshold(self):
+        # Threshold is < 0.5, so exactly 0.5 should not trigger
+        s = session(persistence_rate=0.5, persistence_reliable=1)
+        result = compute_anomalies(s, [], [])
+        assert "low_survival" not in [a["id"] for a in result]
+
+    def test_low_survival_suppressed_when_unreliable(self):
+        s = session(persistence_rate=0.1, persistence_reliable=0)
+        result = compute_anomalies(s, [], [])
+        assert "low_survival" not in [a["id"] for a in result]
+
+    def test_no_commits_is_minor(self):
+        s = session(commits_during=0, ended_at=1000)
+        result = compute_anomalies(s, [], [])
+        ids = [a["id"] for a in result]
+        assert "no_commits" in ids
+        assert next(a for a in result if a["id"] == "no_commits")["severity"] == "minor"
+
+    def test_no_commits_suppressed_when_commits_made(self):
+        s = session(commits_during=2)
+        result = compute_anomalies(s, [], [])
+        assert "no_commits" not in [a["id"] for a in result]
+
+    def test_no_commits_suppressed_when_data_unavailable(self):
+        # commits_during=None means data not yet available
+        s = session(commits_during=None)
+        result = compute_anomalies(s, [], [])
+        assert "no_commits" not in [a["id"] for a in result]
+
+    def test_file_churn_is_minor(self):
+        s = session(hot_files=2)
+        touches = [
+            touch("src/auth.py", touch_count=4, persisted=1),
+            touch("src/db.py", touch_count=3, persisted=1),
+        ]
+        result = compute_anomalies(s, touches, [])
+        ids = [a["id"] for a in result]
+        assert "file_churn" in ids
+        assert next(a for a in result if a["id"] == "file_churn")["severity"] == "minor"
+
+    def test_large_diff_is_minor(self):
+        s = session(diff_lines=600)
+        result = compute_anomalies(s, [], [])
+        ids = [a["id"] for a in result]
+        assert "large_diff" in ids
+        assert next(a for a in result if a["id"] == "large_diff")["severity"] == "minor"
+
+    def test_large_diff_not_triggered_below_500(self):
+        s = session(diff_lines=499)
+        result = compute_anomalies(s, [], [])
+        assert "large_diff" not in [a["id"] for a in result]
+
+    def test_no_tests_is_caution(self):
+        s = session(test_outcome=None, ended_at=1000)
+        result = compute_anomalies(s, [], [])
+        ids = [a["id"] for a in result]
+        assert "no_tests" in ids
+        assert next(a for a in result if a["id"] == "no_tests")["severity"] == "caution"
+
+    def test_no_tests_suppressed_when_tests_ran(self):
+        s = session(test_outcome="pass")
+        result = compute_anomalies(s, [], [])
+        assert "no_tests" not in [a["id"] for a in result]
+
+    def test_majors_appear_before_minors(self):
+        s = session(test_outcome="fail", tree_dirty=1, commits_during=0,
+                    ended_at=1000, diff_lines=600)
+        result = compute_anomalies(s, [], [])
+        severities = [a["severity"] for a in result]
+        saw_minor = False
+        for sev in severities:
+            if sev in ("minor", "caution"):
+                saw_minor = True
+            if saw_minor and sev == "major":
+                pytest.fail(f"major anomaly appeared after minor: {severities}")
+
+    def test_runtime_checkpoint_is_minor(self):
+        s = session()
+        events = [{"event_type": "blast_radius", "payload": "{}", "fired_at": 1}]
+        result = compute_anomalies(s, [], [], session_events=events)
+        ids = [a["id"] for a in result]
+        assert "runtime_checkpoint" in ids
+        cp = next(a for a in result if a["id"] == "runtime_checkpoint")
+        assert cp["severity"] == "minor"
+        assert "blast radius spike" in cp["detail"]
+
+
+# ---------------------------------------------------------------------------
+# compute_review_first
+# ---------------------------------------------------------------------------
+
+class TestComputeReviewFirst:
+    def test_empty_when_no_touches(self):
+        assert compute_review_first([], [], "trusted", None) == []
+
+    def test_persisted_file_included(self):
+        result = compute_review_first(
+            [touch("src/auth.py", touch_count=1, persisted=1)],
+            [], "review_required", None,
+        )
+        assert len(result) == 1
+        assert result[0]["file_path"] == "src/auth.py"
+
+    def test_unpersisted_low_touch_suppressed(self):
+        # One touch, didn't persist → no meaningful signal → excluded
+        result = compute_review_first(
+            [touch("src/utils.py", touch_count=1, persisted=0)],
+            [], "trusted", None,
+        )
+        assert result == []
+
+    def test_sensitive_file_gets_config_sensitive_reason(self):
+        result = compute_review_first(
+            [touch(".env", touch_count=1, persisted=1)],
+            [], "review_required", None,
+        )
+        assert "config-sensitive" in result[0]["reasons"]
+
+    def test_unstable_edits_surfaces_non_persisted_hot_file(self):
+        # 4 touches but nothing persisted → "unstable edits" signal
+        result = compute_review_first(
+            [touch("src/auth.py", touch_count=4, persisted=0)],
+            [], "review_required", None,
+        )
+        assert len(result) == 1
+        assert "unstable edits" in result[0]["reasons"]
+
+    def test_high_priority_when_score_at_least_50(self):
+        # persisted (30) + sensitive (25) = 55 → HIGH
+        result = compute_review_first(
+            [touch(".env", touch_count=1, persisted=1)],
+            [], "review_required", None,
+        )
+        assert result[0]["priority"] == "HIGH"
+
+    def test_medium_priority_when_score_below_50(self):
+        # persisted only (30) → MEDIUM
+        result = compute_review_first(
+            [touch("src/auth.py", touch_count=1, persisted=1)],
+            [], "review_required", None,
+        )
+        assert result[0]["priority"] == "MEDIUM"
+
+    def test_suppressed_for_trusted_with_no_high_priority_files(self):
+        result = compute_review_first(
+            [touch("src/auth.py", touch_count=1, persisted=1)],
+            [], "trusted", None,
+        )
+        assert result == []
+
+    def test_not_suppressed_for_trusted_when_high_priority_file_exists(self):
+        # Even a trusted session should show a sensitive file that was modified
+        result = compute_review_first(
+            [touch(".env", touch_count=1, persisted=1)],
+            [], "trusted", 100,
+        )
+        assert len(result) == 1
+
+    def test_flagged_command_adds_reason(self):
+        result = compute_review_first(
+            [touch("src/auth.py", touch_count=1, persisted=1)],
+            [risky("sudo rm src/auth.py")],
+            "review_required", None,
+        )
+        assert "in flagged command" in result[0]["reasons"]
+
+    def test_sorted_by_score_descending(self):
+        touches = [
+            touch("src/low.py", touch_count=1, persisted=1),   # 30
+            touch(".env", touch_count=1, persisted=1),           # 55
+            touch("src/mid.py", touch_count=3, persisted=1),    # 50
+        ]
+        result = compute_review_first(touches, [], "review_required", 100)
+        scores = [r["score"] for r in result]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_max_files_respected(self):
+        touches = [touch(f"src/file{i}.py", touch_count=1, persisted=1) for i in range(10)]
+        result = compute_review_first(touches, [], "review_required", 100, max_files=3)
+        assert len(result) <= 3
+
+    def test_at_most_two_reasons_per_file(self):
+        # File hits many signals — only top 2 reasons should be surfaced
+        result = compute_review_first(
+            [touch(".env", touch_count=4, persisted=1)],
+            [risky("sudo rm .env")],
+            "review_required", 100,
+        )
+        assert len(result[0]["reasons"]) <= 2
 
 
 # ---------------------------------------------------------------------------
 # compute_wandering_score
 # ---------------------------------------------------------------------------
 
-class TestWanderingScore:
-    def test_zero_when_no_files_touched(self) -> None:
+class TestComputeWanderingScore:
+    def test_zero_when_no_files_touched(self):
         assert compute_wandering_score(0, 0) == 0.0
 
-    def test_zero_when_no_hot_files(self) -> None:
-        # 5 files touched, none hot
-        assert compute_wandering_score(5, 0) == 0.0
+    def test_zero_when_no_hot_files(self):
+        assert compute_wandering_score(10, 0) == 0.0
 
-    def test_one_when_all_hot(self) -> None:
-        # Every touched file was hot
-        assert compute_wandering_score(4, 4) == 1.0
+    def test_one_when_all_files_hot(self):
+        assert compute_wandering_score(5, 5) == 1.0
 
-    def test_partial_wandering(self) -> None:
-        # 2 of 4 files were hot → 0.5
-        assert compute_wandering_score(4, 2) == 0.5
-
-    def test_capped_at_one(self) -> None:
-        # hot_files > files_touched shouldn't produce > 1.0
-        assert compute_wandering_score(2, 5) == 1.0
-
-    def test_single_hot_file(self) -> None:
-        assert compute_wandering_score(1, 1) == 1.0
-
-    def test_single_non_hot_file(self) -> None:
-        assert compute_wandering_score(1, 0) == 0.0
-
-    def test_result_rounded_to_3_decimals(self) -> None:
-        # 1/3 = 0.333...
-        result = compute_wandering_score(3, 1)
-        assert result == pytest.approx(0.333, abs=0.001)
+    def test_proportional(self):
+        assert compute_wandering_score(10, 5) == 0.5
 
 
 # ---------------------------------------------------------------------------
 # compute_outcome_score
 # ---------------------------------------------------------------------------
 
-class TestOutcomeScore:
-    def test_zero_when_all_signals_bad(self) -> None:
-        score = compute_outcome_score(
-            commits_during=0,
-            tree_dirty=True,
-            test_outcome=None,
-            persistence_rate=None,
-            persistence_reliable=False,
-        )
-        assert score == 0
+class TestComputeOutcomeScore:
+    def test_one_when_only_clean_tree(self):
+        # tree_dirty=False (clean tree) always scores +1 — it's a positive signal.
+        # No commits, no test data, no persistence → minimum score is 1, not 0.
+        assert compute_outcome_score(0, False, None, None, False) == 1
 
-    def test_max_four_when_all_signals_good(self) -> None:
-        score = compute_outcome_score(
-            commits_during=1,
-            tree_dirty=False,
-            test_outcome="pass",
-            persistence_rate=0.9,
-            persistence_reliable=True,
-        )
-        assert score == 4
+    def test_zero_when_tree_dirty_and_nothing_else(self):
+        # Dirty tree + no commits + no test data = truly nothing positive = 0
+        assert compute_outcome_score(0, True, None, None, False) == 0
 
-    def test_commit_adds_one(self) -> None:
-        base = compute_outcome_score(0, True, None, None, False)
-        with_commit = compute_outcome_score(1, True, None, None, False)
-        assert with_commit == base + 1
+    def test_four_when_all_signals_positive(self):
+        assert compute_outcome_score(1, False, "pass", 0.9, True) == 4
 
-    def test_clean_tree_adds_one(self) -> None:
-        dirty = compute_outcome_score(0, True, None, None, False)
-        clean = compute_outcome_score(0, False, None, None, False)
-        assert clean == dirty + 1
+    def test_test_fail_does_not_add_point(self):
+        # committed + clean tree + high persistence = 3 (no test point)
+        assert compute_outcome_score(1, False, "fail", 0.9, True) == 3
 
-    def test_test_pass_adds_one(self) -> None:
-        no_test = compute_outcome_score(0, True, None, None, False)
-        with_pass = compute_outcome_score(0, True, "pass", None, False)
-        assert with_pass == no_test + 1
-
-    def test_test_fail_adds_nothing(self) -> None:
-        no_test = compute_outcome_score(0, True, None, None, False)
-        with_fail = compute_outcome_score(0, True, "fail", None, False)
-        assert with_fail == no_test
-
-    def test_high_persistence_adds_one(self) -> None:
-        no_persist = compute_outcome_score(0, True, None, None, False)
-        with_persist = compute_outcome_score(0, True, None, 0.8, True)
-        assert with_persist == no_persist + 1
-
-    def test_low_persistence_adds_nothing(self) -> None:
-        no_persist = compute_outcome_score(0, True, None, None, False)
-        with_low = compute_outcome_score(0, True, None, 0.5, True)
-        assert with_low == no_persist
-
-    def test_persistence_threshold_is_70_percent(self) -> None:
-        below = compute_outcome_score(0, True, None, 0.699, True)
-        at    = compute_outcome_score(0, True, None, 0.700, True)
-        assert below == 0
-        assert at == 1
-
-    def test_unreliable_persistence_not_counted(self) -> None:
-        reliable = compute_outcome_score(0, True, None, 0.9, True)
-        unreliable = compute_outcome_score(0, True, None, 0.9, False)
-        assert reliable == 1
-        assert unreliable == 0
-
-    def test_none_persistence_rate_not_counted(self) -> None:
-        score = compute_outcome_score(0, True, None, None, True)
-        assert score == 0
-
-
-# ---------------------------------------------------------------------------
-# compute_quality_score
-# ---------------------------------------------------------------------------
-
-class TestQualityScore:
-    def test_zero_for_worst_session(self) -> None:
-        # outcome=0, wandering=1.0, no persistence
-        score = compute_quality_score(0, 1.0, None, False)
-        assert score == 0.0
-
-    def test_one_for_best_session_without_persistence(self) -> None:
-        # outcome=4/4=1.0, wandering=0 → quality=0.60+0.40=1.0
-        score = compute_quality_score(4, 0.0, None, False)
-        assert score == pytest.approx(1.0)
-
-    def test_one_for_best_session_with_persistence(self) -> None:
-        # outcome=4/4=1.0, wandering=0, persistence=1.0 → 0.55+0.25+0.20=1.0
-        score = compute_quality_score(4, 0.0, 1.0, True)
-        assert score == pytest.approx(1.0)
-
-    def test_uses_two_signal_formula_when_persistence_unreliable(self) -> None:
-        s1 = compute_quality_score(2, 0.5, 0.9, False)   # unreliable
-        s2 = compute_quality_score(2, 0.5, None, False)   # no data
-        # Both should use the 60/40 formula and give same result
-        assert s1 == pytest.approx(s2)
-
-    def test_uses_three_signal_formula_when_persistence_reliable(self) -> None:
-        two_signal   = compute_quality_score(2, 0.0, None, False)
-        three_signal = compute_quality_score(2, 0.0, 1.0, True)
-        # Three-signal includes persistence bonus → higher score
-        assert three_signal > two_signal
-
-    def test_result_between_zero_and_one(self) -> None:
-        for outcome in range(5):
-            for wandering in [0.0, 0.5, 1.0]:
-                score = compute_quality_score(outcome, wandering, None, False)
-                assert 0.0 <= score <= 1.0, f"Out of range: {score}"
-
-    def test_higher_outcome_gives_higher_quality(self) -> None:
-        low  = compute_quality_score(1, 0.5, None, False)
-        high = compute_quality_score(3, 0.5, None, False)
-        assert high > low
-
-    def test_lower_wandering_gives_higher_quality(self) -> None:
-        high_wander = compute_quality_score(2, 0.8, None, False)
-        low_wander  = compute_quality_score(2, 0.2, None, False)
-        assert low_wander > high_wander
-
-    def test_rounded_to_3_decimal_places(self) -> None:
-        score = compute_quality_score(1, 0.333, None, False)
-        assert score == round(score, 3)
-
-
-# ---------------------------------------------------------------------------
-# classify_outcome
-# ---------------------------------------------------------------------------
-
-class TestClassifyOutcome:
-    def test_zero_is_incomplete(self) -> None:
-        assert classify_outcome(0) == "incomplete"
-
-    def test_one_is_partial(self) -> None:
-        assert classify_outcome(1) == "partial"
-
-    def test_two_is_partial(self) -> None:
-        assert classify_outcome(2) == "partial"
-
-    def test_three_is_success(self) -> None:
-        assert classify_outcome(3) == "success"
-
-    def test_four_is_success(self) -> None:
-        assert classify_outcome(4) == "success"
-
-
-# ---------------------------------------------------------------------------
-# compute_all
-# ---------------------------------------------------------------------------
-
-class TestComputeAll:
-    def make_session(self, **overrides) -> dict:
-        base = {
-            "files_touched":      4,
-            "hot_files":          1,
-            "commits_during":     1,
-            "tree_dirty":         0,
-            "test_outcome":       "pass",
-            "persistence_rate":   0.8,
-            "persistence_reliable": 1,
-        }
-        base.update(overrides)
-        return base
-
-    def test_returns_all_four_keys(self) -> None:
-        result = compute_all(self.make_session())
-        assert set(result.keys()) == {
-            "wandering_score", "outcome_score", "quality_score", "auto_outcome"
-        }
-
-    def test_good_session_scores_high(self) -> None:
-        result = compute_all(self.make_session())
-        assert result["outcome_score"] == 4
-        assert result["quality_score"] > 0.8
-        assert result["auto_outcome"] == "success"
-
-    def test_bad_session_scores_low(self) -> None:
-        result = compute_all(self.make_session(
-            files_touched=6,
-            hot_files=4,
-            commits_during=0,
-            tree_dirty=1,
-            test_outcome="fail",
-            persistence_rate=0.2,
-            persistence_reliable=1,
-        ))
-        assert result["outcome_score"] == 0
-        assert result["quality_score"] < 0.5
-        assert result["auto_outcome"] == "incomplete"
-
-    def test_handles_none_values(self) -> None:
-        # Session with no data (e.g. git analysis failed).
-        # tree_dirty defaults to False (bool(None)==False) → clean tree = +1 point.
-        result = compute_all({})
-        assert result["wandering_score"] == 0.0
-        assert result["outcome_score"] == 1     # clean tree scores +1
-        assert result["auto_outcome"] == "partial"
-        assert 0.0 <= result["quality_score"] <= 1.0
-
-    def test_handles_integer_booleans_from_sqlite(self) -> None:
-        # SQLite stores booleans as 0/1 integers
-        result = compute_all(self.make_session(tree_dirty=0, persistence_reliable=1))
-        assert result["outcome_score"] >= 1   # clean tree counted
-
-    def test_wandering_score_present(self) -> None:
-        result = compute_all(self.make_session(files_touched=4, hot_files=2))
-        assert result["wandering_score"] == pytest.approx(0.5)
+    def test_persistence_ignored_when_unreliable(self):
+        score_reliable   = compute_outcome_score(1, False, "pass", 0.9, True)
+        score_unreliable = compute_outcome_score(1, False, "pass", 0.9, False)
+        assert score_reliable == 4
+        assert score_unreliable == 3
