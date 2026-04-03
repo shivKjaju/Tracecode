@@ -159,6 +159,35 @@ def check_wrapper() -> Check:
     )
 
 
+def _path_fix_hint() -> str:
+    """Return a shell-specific hint for fixing PATH, based on $SHELL."""
+    shell = os.environ.get("SHELL", "")
+    if "fish" in shell:
+        return (
+            "source ~/.config/fish/config.fish\n"
+            "  Or add to ~/.config/fish/conf.d/tracecode.fish:\n"
+            "    fish_add_path ~/.tracecode/bin"
+        )
+    if "zsh" in shell:
+        return (
+            "source ~/.zshrc\n"
+            "  Or add to ~/.zshrc:\n"
+            '    export PATH="$HOME/.tracecode/bin:$PATH"'
+        )
+    if "bash" in shell:
+        return (
+            "source ~/.bashrc\n"
+            "  Or add to ~/.bashrc:\n"
+            '    export PATH="$HOME/.tracecode/bin:$PATH"'
+        )
+    # Unknown shell — give the generic form
+    return (
+        'Add to your shell config:\n'
+        '    export PATH="$HOME/.tracecode/bin:$PATH"\n'
+        "  For fish shell: fish_add_path ~/.tracecode/bin"
+    )
+
+
 def check_path_order() -> Check:
     resolved = shutil.which("claude")
     if resolved is None:
@@ -166,11 +195,7 @@ def check_path_order() -> Check:
             label="PATH order",
             passed=False,
             detail="claude not found in PATH",
-            hint=(
-                'source ~/.zshrc\n'
-                '  Or add to your shell rc:\n'
-                '    export PATH="$HOME/.tracecode/bin:$PATH"'
-            ),
+            hint=_path_fix_hint(),
         )
     try:
         is_wrapper = Path(resolved).resolve() == _WRAPPER.resolve()
@@ -184,11 +209,7 @@ def check_path_order() -> Check:
         label="PATH order",
         passed=False,
         detail=f"claude resolves to {resolved} — wrapper not intercepting",
-        hint=(
-            'source ~/.zshrc\n'
-            '  Or add to your shell rc:\n'
-            '    export PATH="$HOME/.tracecode/bin:$PATH"'
-        ),
+        hint=_path_fix_hint(),
     )
 
 

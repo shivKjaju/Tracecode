@@ -245,6 +245,7 @@ echo "  Wraps:     $REAL_CLAUDE"
 
 step "Configuring PATH..."
 
+# For bash and zsh: append an export line to the rc file.
 add_to_path() {
     local rc_file="$1"
     local marker="# added by tracecode installer"
@@ -260,21 +261,48 @@ add_to_path() {
     fi
 }
 
+# For fish: drop a file into ~/.config/fish/conf.d/ — fish auto-sources
+# everything in that directory, so we don't need to touch config.fish.
+# Uses `fish_add_path` which deduplicates and persists across sessions (Fish 3.2+).
+add_to_path_fish() {
+    local conf_dir="$HOME/.config/fish/conf.d"
+    local conf_file="$conf_dir/tracecode.fish"
+    if [[ -f "$conf_file" ]]; then
+        echo "  $conf_file already exists — skipping"
+        return
+    fi
+    mkdir -p "$conf_dir"
+    echo "# added by tracecode installer" > "$conf_file"
+    echo "fish_add_path $HOME/.tracecode/bin" >> "$conf_file"
+    echo "  Added to $conf_file"
+}
+
 ADDED=false
-# Detect shell and update appropriate rc file
+RELOAD_CMD=""
+
 if [[ "${SHELL:-}" == */zsh ]]; then
     add_to_path "$HOME/.zshrc"
     ADDED=true
+    RELOAD_CMD="source ~/.zshrc"
 fi
 if [[ "${SHELL:-}" == */bash ]]; then
     add_to_path "$HOME/.bashrc"
     add_to_path "$HOME/.bash_profile"
     ADDED=true
+    RELOAD_CMD="source ~/.bashrc"
+fi
+if [[ "${SHELL:-}" == */fish ]]; then
+    add_to_path_fish
+    ADDED=true
+    RELOAD_CMD="source ~/.config/fish/config.fish"
 fi
 if [[ "$ADDED" == false ]]; then
-    yellow "  Could not detect shell rc file."
+    yellow "  Could not detect shell (detected: ${SHELL:-unknown})."
     yellow "  Add this line manually to your shell config:"
     yellow '    export PATH="$HOME/.tracecode/bin:$PATH"'
+    yellow "  For fish shell, add this to ~/.config/fish/conf.d/tracecode.fish:"
+    yellow "    fish_add_path $HOME/.tracecode/bin"
+    RELOAD_CMD="source ~/.zshrc  # or your shell's equivalent"
 fi
 
 # ---------------------------------------------------------------------------
@@ -285,7 +313,7 @@ echo
 green "✓ Tracecode installed successfully."
 echo
 echo "  Reload your shell to activate:"
-echo "    source ~/.zshrc    # or ~/.bashrc"
+echo "    $RELOAD_CMD"
 echo
 echo "  Then just use claude normally:"
 echo "    cd your-project"
