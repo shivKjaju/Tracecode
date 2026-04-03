@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from tracecode.analysis.tests import (
+    _check_jest_vitest_json,
     _check_junit_xml,
     _check_pytest_cache,
     _run_command,
@@ -194,6 +195,92 @@ class TestCheckJunitXml:
         os.utime(xml_path, (ts, ts))
         result = _check_junit_xml(tmp_path, SESSION_START)
         assert result == "pass"
+
+
+def write_json_results(path: Path, success: bool, num_failed: int = 0) -> Path:
+    """Write a jest/vitest-style JSON results file and stamp it as fresh."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "success": success,
+        "numTotalTests": 10,
+        "numPassedTests": 10 - num_failed,
+        "numFailedTests": num_failed,
+        "numPendingTests": 0,
+    }))
+    import os
+    ts = SESSION_START + 10
+    os.utime(path, (ts, ts))
+    return path
+
+
+# ---------------------------------------------------------------------------
+# _check_jest_vitest_json
+# ---------------------------------------------------------------------------
+
+class TestCheckJestVitestJson:
+    def test_pass_from_jest_results(self, tmp_path: Path) -> None:
+        write_json_results(tmp_path / "jest-results.json", success=True)
+        assert _check_jest_vitest_json(tmp_path, SESSION_START) == "pass"
+
+    def test_fail_from_jest_results(self, tmp_path: Path) -> None:
+        write_json_results(tmp_path / "jest-results.json", success=False, num_failed=2)
+        assert _check_jest_vitest_json(tmp_path, SESSION_START) == "fail"
+
+    def test_pass_from_vitest_results(self, tmp_path: Path) -> None:
+        write_json_results(tmp_path / "vitest-results.json", success=True)
+        assert _check_jest_vitest_json(tmp_path, SESSION_START) == "pass"
+
+    def test_fail_from_vitest_results(self, tmp_path: Path) -> None:
+        write_json_results(tmp_path / "vitest-results.json", success=False, num_failed=1)
+        assert _check_jest_vitest_json(tmp_path, SESSION_START) == "fail"
+
+    def test_pass_from_test_results_json(self, tmp_path: Path) -> None:
+        write_json_results(tmp_path / "test-results.json", success=True)
+        assert _check_jest_vitest_json(tmp_path, SESSION_START) == "pass"
+
+    def test_fallback_to_num_failed_when_no_success_field(self, tmp_path: Path) -> None:
+        # Some older jest versions omit "success" — fall back to numFailedTests
+        path = tmp_path / "jest-results.json"
+        path.write_text(json.dumps({"numFailedTests": 0, "numTotalTests": 5}))
+        import os
+        os.utime(path, (SESSION_START + 10, SESSION_START + 10))
+        assert _check_jest_vitest_json(tmp_path, SESSION_START) == "pass"
+
+    def test_fallback_num_failed_nonzero_is_fail(self, tmp_path: Path) -> None:
+        path = tmp_path / "jest-results.json"
+        path.write_text(json.dumps({"numFailedTests": 3, "numTotalTests": 5}))
+        import os
+        os.utime(path, (SESSION_START + 10, SESSION_START + 10))
+        assert _check_jest_vitest_json(tmp_path, SESSION_START) == "fail"
+
+    def test_none_when_no_json_files(self, tmp_path: Path) -> None:
+        assert _check_jest_vitest_json(tmp_path, SESSION_START) is None
+
+    def test_none_when_file_is_stale(self, tmp_path: Path) -> None:
+        path = tmp_path / "jest-results.json"
+        write_json_results(path, success=True)
+        import os
+        stale_ts = SESSION_START - 120
+        os.utime(path, (stale_ts, stale_ts))
+        assert _check_jest_vitest_json(tmp_path, SESSION_START) is None
+
+    def test_none_when_json_is_not_a_dict(self, tmp_path: Path) -> None:
+        path = tmp_path / "jest-results.json"
+        path.write_text("[1, 2, 3]")
+        import os
+        os.utime(path, (SESSION_START + 10, SESSION_START + 10))
+        assert _check_jest_vitest_json(tmp_path, SESSION_START) is None
+
+    def test_none_when_json_missing_known_fields(self, tmp_path: Path) -> None:
+        path = tmp_path / "jest-results.json"
+        path.write_text(json.dumps({"unrelated": "data"}))
+        import os
+        os.utime(path, (SESSION_START + 10, SESSION_START + 10))
+        assert _check_jest_vitest_json(tmp_path, SESSION_START) is None
+
+    def test_reports_subdir_path(self, tmp_path: Path) -> None:
+        write_json_results(tmp_path / "reports" / "test-results.json", success=False)
+        assert _check_jest_vitest_json(tmp_path, SESSION_START) == "fail"
 
 
 # ---------------------------------------------------------------------------

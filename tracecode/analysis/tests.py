@@ -96,6 +96,10 @@ def _detect_from_artifacts(project_path: Path, session_start: int) -> str | None
     if outcome is not None:
         return outcome
 
+    outcome = _check_jest_vitest_json(project_path, session_start)
+    if outcome is not None:
+        return outcome
+
     outcome = _check_junit_xml(project_path, session_start)
     if outcome is not None:
         return outcome
@@ -137,15 +141,63 @@ def _check_pytest_cache(project_path: Path, session_start: int) -> str | None:
         return None
 
 
+def _check_jest_vitest_json(project_path: Path, session_start: int) -> str | None:
+    """
+    Check for JSON output files written by jest or vitest.
+
+    Both runners write the same JSON shape when configured to do so:
+      jest:   jest --json --outputFile=jest-results.json
+      vitest: vitest run --reporter=json --outputFile=vitest-results.json
+
+    JSON shape (either runner):
+      { "success": true/false, "numFailedTests": N, "numTotalTests": N, ... }
+
+    We try "success" first (definitive boolean), then fall back to
+    "numFailedTests" in case the field is present but "success" is not.
+    """
+    candidates = [
+        project_path / "jest-results.json",
+        project_path / "vitest-results.json",
+        project_path / ".jest-results.json",
+        project_path / "test-results.json",
+        project_path / "reports" / "test-results.json",
+    ]
+
+    for candidate in candidates:
+        if not candidate.exists() or not _is_fresh(candidate, session_start):
+            continue
+        try:
+            data = json.loads(candidate.read_text())
+            if not isinstance(data, dict):
+                continue
+            # "success" field is set by both jest --json and vitest --reporter=json
+            if "success" in data:
+                return "pass" if data["success"] else "fail"
+            # Fallback: count failed tests directly
+            if "numFailedTests" in data:
+                return "fail" if data["numFailedTests"] > 0 else "pass"
+        except (json.JSONDecodeError, OSError, TypeError):
+            continue
+
+    return None
+
+
 def _check_junit_xml(project_path: Path, session_start: int) -> str | None:
     """
     Check common JUnit XML output locations.
     Parses the testsuite 'failures' and 'errors' attributes.
+
+    Covers: pytest (pytest-junit), jest (jest-junit package),
+    vitest (--reporter=junit), Maven/Gradle (target/surefire-reports),
+    and Rust nextest.
     """
     candidates = [
         project_path / "junit.xml",
         project_path / "test-results.xml",
+        project_path / "test-report.xml",
         project_path / "test-results" / "junit.xml",
+        project_path / "reports" / "junit.xml",
+        project_path / "reports" / "jest" / "junit.xml",
         project_path / "target" / "nextest" / "ci" / "junit.xml",
         project_path / "coverage" / "junit.xml",
     ]
