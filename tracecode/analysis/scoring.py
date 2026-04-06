@@ -22,6 +22,8 @@ Scoring philosophy:
 
 import re
 
+from tracecode.analysis.paths import is_protected_path
+
 
 def compute_wandering_score(files_touched: int, hot_files: int) -> float:
     """
@@ -395,6 +397,14 @@ def compute_review_first(
         if is_sensitive_file(file_path):
             score += 25
             reasons.append(("config-sensitive", 25))
+
+        # Protected path (infra/, auth/, .github/, etc.) — structural signal.
+        # A file in a protected directory always deserves review even if other
+        # signals are weak. Does NOT affect the verdict engine — only boosts
+        # Review First priority and surfaces in the terminal summary.
+        if is_protected_path(file_path):
+            score += 25
+            reasons.append(("protected path", 25))
 
         # The file path appears in a risky command string (e.g. sudo rm src/auth.py)
         if file_path in risky_cmd_text:

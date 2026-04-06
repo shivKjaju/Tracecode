@@ -416,3 +416,65 @@ def get_session_events(conn: sqlite3.Connection, session_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_latest_session_for_project(
+    conn: sqlite3.Connection,
+    project_path: str,
+    ended_only: bool = True,
+) -> dict | None:
+    """
+    Return the most recently started session for a given project path.
+
+    project_path should be an absolute, resolved path string — the same form
+    stored by start_session() after calling Path(project_path).resolve().
+
+    If ended_only=True (default), only returns sessions with ended_at IS NOT NULL.
+    Returns a plain dict or None if no matching session exists.
+    """
+    if ended_only:
+        row = conn.execute(
+            """
+            SELECT * FROM sessions
+            WHERE project_path = ? AND ended_at IS NOT NULL
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            (project_path,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT * FROM sessions
+            WHERE project_path = ?
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            (project_path,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_session_by_prefix(
+    conn: sqlite3.Connection,
+    id_prefix: str,
+) -> dict | None:
+    """
+    Return a session whose UUID starts with id_prefix (case-insensitive).
+
+    Allows short-form lookups like 'tracecode review 8a3f1b2' where the user
+    provides the first 8 characters of the session UUID.
+
+    Returns a plain dict or None if no match. If multiple sessions share the
+    same prefix (extremely unlikely with UUIDs), returns the most recent.
+    """
+    row = conn.execute(
+        """
+        SELECT * FROM sessions
+        WHERE id LIKE ?
+        ORDER BY started_at DESC
+        LIMIT 1
+        """,
+        (id_prefix + "%",),
+    ).fetchone()
+    return dict(row) if row else None
+
+
