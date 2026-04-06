@@ -52,8 +52,11 @@ _REASON_LABELS: dict[str, str] = {
     "persisted":          "persisted",   # suppressed in terminal brief view
 }
 
-# These reasons are too low-signal or implicit in the brief/compact terminal view.
-_SUPPRESS_IN_TERMINAL: frozenset[str] = frozenset({"persisted"})
+# These reasons are suppressed in the brief/compact terminal view because they
+# are either implied by the file being listed ("persisted") or are too granular
+# for a one-line summary ("in final diff" — the reviewer can see this themselves).
+# Both are shown in full mode (tracecode review).
+_SUPPRESS_IN_TERMINAL: frozenset[str] = frozenset({"persisted", "in final diff"})
 
 # ---------------------------------------------------------------------------
 # ANSI color helpers

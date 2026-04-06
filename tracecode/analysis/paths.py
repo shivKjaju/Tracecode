@@ -70,8 +70,9 @@ _PROTECTED_PATTERNS: list[re.Pattern] = [
     re.compile(r'\.(pem|key|crt|p12|pfx)$', re.IGNORECASE),
     # SSH private keys by convention
     re.compile(r'(^|[/\\])id_(rsa|ed25519|dsa|ecdsa)$'),
-    # docker-compose.yml, docker-compose.override.yml, docker-compose-prod.yml
-    re.compile(r'(^|[/\\])docker-compose(\.ya?ml|-[^/\\]*)$', re.IGNORECASE),
+    # docker-compose.yml, docker-compose.yaml, docker-compose.override.yml, docker-compose-prod.yml
+    # Matches any filename starting with 'docker-compose' followed by '.' or '-'
+    re.compile(r'(^|[/\\])docker-compose[.\-][^/\\]*$', re.IGNORECASE),
 ]
 
 
