@@ -10,10 +10,15 @@ Commands:
     tracecode guard              PreToolUse hook — blocks dangerous commands
     tracecode checkpoint         PostToolUse hook — surfaces live alerts
     tracecode install-guard      register hooks in ~/.claude/settings.json
+    tracecode review [SESSION]   print trust summary for a session
+    tracecode install-hook       install pre-commit trust check in a git repo
     tracecode serve              start the API and UI server
 """
 
+import subprocess
 import sys
+from pathlib import Path
+
 import click
 
 from tracecode.config import (
@@ -134,11 +139,51 @@ def cmd_session_end(
             project_path=project or None,
             git_commit_before=commit_before or None,
         )
-        click.echo(f"tracecode: session {session_id[:8]} recorded.", err=True)
     except Exception as exc:
         # Never let a session-end failure surface as an error to the developer —
         # their claude session already ended successfully.
         click.echo(f"tracecode session-end error: {exc}", err=True)
+        return
+
+    # Print trust summary to stderr.
+    # Re-query the fully-written session row and re-compute the display signals.
+    # All data was already computed by the pipeline above; this is just a read
+    # plus two deterministic pure-function calls — adds < 10ms.
+    try:
+        from tracecode.analysis.scoring import compute_anomalies, compute_review_first
+        from tracecode.db import (
+            get_conn,
+            get_file_touches,
+            get_risky_commands,
+            get_session,
+            count_risky_commands,
+        )
+        from tracecode.output.summary import render_session_summary
+
+        with get_conn(config.db_path) as conn:
+            session_row = get_session(conn, session_id) or {}
+            touches     = get_file_touches(conn, session_id)
+            risks       = get_risky_commands(conn, session_id)
+            risk_counts = count_risky_commands(conn, session_id)
+
+        if session_row:
+            anomalies    = compute_anomalies(session_row, touches, risks)
+            review_first = compute_review_first(
+                touches, risks,
+                session_row.get("verdict"),
+                session_row.get("diff_lines"),
+            )
+            summary = render_session_summary(
+                session=session_row,
+                anomalies=anomalies,
+                review_first=review_first,
+                risk_counts=risk_counts,
+            )
+            click.echo(summary, err=True)
+
+    except Exception as exc:
+        # Summary render failure is non-fatal — fall back to the minimal line
+        click.echo(f" tracecode › session {session_id[:8]} recorded.", err=True)
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +336,271 @@ def cmd_install_guard() -> None:
     click.echo(f"Hooks installed in {settings_path}")
     click.echo("  PreToolUse  → tracecode guard (blocks dangerous commands)")
     click.echo("  PostToolUse → tracecode checkpoint (surfaces runtime warnings to Claude)")
+
+
+# ---------------------------------------------------------------------------
+# Shared helper — project path resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_project_path(override: str | None) -> str:
+    """
+    Resolve the current project path for session lookup.
+
+    Priority:
+      1. --project override from the caller
+      2. Git repository root (git rev-parse --show-toplevel)
+      3. Current working directory as fallback
+
+    Returns an absolute path string matching the form stored by start_session().
+    """
+    if override:
+        return str(Path(override).resolve())
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return str(Path.cwd())
+
+
+# ---------------------------------------------------------------------------
+# tracecode review
+# ---------------------------------------------------------------------------
+
+@cli.command("review")
+@click.argument("session_id", required=False, default=None,
+                metavar="[SESSION_ID]")
+@click.option("--last", "use_last", is_flag=True, default=False,
+              help="Show most recent ended session for this project (default when no SESSION_ID).")
+@click.option("--compact", is_flag=True, default=False,
+              help="Single-line output. Used by the pre-commit hook.")
+@click.option("--quiet-if-trusted", is_flag=True, default=False,
+              help="Print nothing when the session verdict is 'trusted'.")
+@click.option("--project", default=None,
+              help="Override the project path used for session lookup.")
+def cmd_review(
+    session_id: str | None,
+    use_last: bool,
+    compact: bool,
+    quiet_if_trusted: bool,
+    project: str | None,
+) -> None:
+    """
+    Print the trust summary for a session.
+
+    Defaults to the most recent ended session for the current project.
+    Pass a SESSION_ID (full UUID or 8-char prefix) to review a specific session.
+
+    Examples:
+      tracecode review               # most recent session, full output
+      tracecode review 8a3f1b2c      # specific session by prefix
+      tracecode review --compact     # one-line (used by pre-commit hook)
+    """
+    import time
+
+    from tracecode.analysis.scoring import compute_anomalies, compute_review_first
+    from tracecode.db import (
+        get_conn,
+        get_file_touches,
+        get_risky_commands,
+        get_session,
+        get_session_by_prefix,
+        get_latest_session_for_project,
+        count_risky_commands,
+    )
+    from tracecode.output.summary import render_session_summary
+
+    try:
+        config = load_config(DEFAULT_CONFIG_PATH)
+    except Exception as exc:
+        if not compact:
+            click.echo(f"  Could not load config: {exc}", err=True)
+        sys.exit(1)
+
+    resolved_project = _resolve_project_path(project)
+
+    # ── Locate the session ──────────────────────────────────────────────────
+    session_row: dict | None = None
+    with get_conn(config.db_path) as conn:
+        if session_id:
+            # Try exact UUID match first, then 8-char prefix
+            session_row = get_session(conn, session_id)
+            if not session_row:
+                session_row = get_session_by_prefix(conn, session_id)
+        else:
+            # --last is the default when no SESSION_ID is given
+            session_row = get_latest_session_for_project(conn, resolved_project)
+
+    if not session_row:
+        if not compact:
+            name = Path(resolved_project).name
+            click.echo(f"  No sessions found for {name}.")
+            click.echo("  Run claude in a project directory to start recording.")
+        return
+
+    # ── Guard: session still in progress ────────────────────────────────────
+    if not session_row.get("ended_at"):
+        if not compact:
+            sid = (session_row.get("id") or "")[:8]
+            click.echo(f"  Session {sid} is still in progress.")
+        return
+
+    # ── Staleness check (compact/hook mode only) ─────────────────────────────
+    # In compact mode the command is invoked by the pre-commit hook, which runs
+    # immediately after a session. If the last session ended more than 2 hours
+    # ago, the developer is committing unrelated work — stay silent.
+    if compact:
+        ended_at = int(session_row.get("ended_at") or 0)
+        if time.time() - ended_at > 7200:
+            return
+
+    # ── Quiet-if-trusted ────────────────────────────────────────────────────
+    verdict = session_row.get("verdict") or "trusted"
+    if quiet_if_trusted and verdict == "trusted":
+        return
+
+    # ── Load associated data and render ─────────────────────────────────────
+    sid = session_row["id"]
+    with get_conn(config.db_path) as conn:
+        touches     = get_file_touches(conn, sid)
+        risks       = get_risky_commands(conn, sid)
+        risk_counts = count_risky_commands(conn, sid)
+
+    anomalies    = compute_anomalies(session_row, touches, risks)
+    review_first = compute_review_first(
+        touches, risks, verdict, session_row.get("diff_lines")
+    )
+
+    # Full mode when the user explicitly invoked the command without --compact
+    full = not compact
+
+    summary = render_session_summary(
+        session=session_row,
+        anomalies=anomalies,
+        review_first=review_first,
+        risk_counts=risk_counts,
+        compact=compact,
+        full=full,
+        use_color=sys.stdout.isatty(),
+    )
+    click.echo(summary)
+
+
+# ---------------------------------------------------------------------------
+# tracecode install-hook
+# ---------------------------------------------------------------------------
+
+_HOOK_MARKER = "# Installed by: tracecode install-hook"
+
+_HOOK_FULL = """\
+#!/usr/bin/env bash
+# Tracecode pre-commit trust check — non-blocking, always exits 0.
+{marker}
+# Remove with: tracecode install-hook --remove
+command -v tracecode >/dev/null 2>&1 \\
+  && tracecode review --last --compact --quiet-if-trusted 2>/dev/null \\
+  || true
+""".format(marker=_HOOK_MARKER)
+
+_HOOK_APPEND = """
+# ---------------------------------------------------------------------------
+# Tracecode pre-commit trust check — non-blocking, always exits 0.
+{marker}
+# Remove with: tracecode install-hook --remove
+command -v tracecode >/dev/null 2>&1 \\
+  && tracecode review --last --compact --quiet-if-trusted 2>/dev/null \\
+  || true
+""".format(marker=_HOOK_MARKER)
+
+
+@cli.command("install-hook")
+@click.option("--project-path", default=None,
+              help="Git project root (default: git root of current directory).")
+@click.option("--remove", is_flag=True, default=False,
+              help="Remove the installed hook.")
+def cmd_install_hook(project_path: str | None, remove: bool) -> None:
+    """
+    Install (or remove) a non-blocking pre-commit trust check.
+
+    After each AI coding session, git commits in this project will show a
+    one-line Tracecode trust summary before the commit message prompt.
+
+    The hook always exits 0 — it never blocks a commit.
+
+    Examples:
+      tracecode install-hook                # install in current project
+      tracecode install-hook --remove       # remove the hook
+    """
+    resolved = _resolve_project_path(project_path)
+    git_dir  = Path(resolved) / ".git"
+
+    if not git_dir.is_dir():
+        click.echo(f"  Not a git repository: {resolved}")
+        click.echo("  Run this command from inside a project directory.")
+        sys.exit(1)
+
+    hook_dir  = git_dir / "hooks"
+    hook_dir.mkdir(exist_ok=True)
+    hook_path = hook_dir / "pre-commit"
+
+    # ── Remove ──────────────────────────────────────────────────────────────
+    if remove:
+        if not hook_path.exists():
+            click.echo("  No pre-commit hook found.")
+            return
+
+        content = hook_path.read_text()
+        if _HOOK_MARKER not in content:
+            click.echo("  Tracecode hook not found in .git/hooks/pre-commit.")
+            click.echo("  Nothing removed.")
+            return
+
+        # Check whether the file contains only our hook.
+        # Strip shebang, blank lines, and our own lines to see what's left.
+        other_lines = [
+            line for line in content.splitlines()
+            if line.strip()
+            and not line.startswith("#")
+            and "tracecode" not in line.lower()
+            and "#!/usr/bin/env bash" not in line
+        ]
+        if not other_lines:
+            hook_path.unlink()
+            click.echo("  Removed pre-commit hook.")
+        else:
+            click.echo("  The pre-commit hook contains other content.")
+            click.echo(f"  Remove the Tracecode block manually from: {hook_path}")
+            click.echo(f"  Look for the line: {_HOOK_MARKER}")
+        return
+
+    # ── Install ──────────────────────────────────────────────────────────────
+    if hook_path.exists():
+        content = hook_path.read_text()
+        if _HOOK_MARKER in content:
+            click.echo("  Tracecode pre-commit hook is already installed.")
+            click.echo(f"  Location: {hook_path}")
+            return
+
+        # Append our block to the existing hook
+        with hook_path.open("a") as f:
+            f.write(_HOOK_APPEND)
+        click.echo(f"  Appended Tracecode trust check to: {hook_path}")
+    else:
+        hook_path.write_text(_HOOK_FULL)
+        hook_path.chmod(0o755)
+        click.echo(f"  Installed pre-commit hook: {hook_path}")
+
+    click.echo()
+    click.echo("  After each AI coding session, commits here will show a trust summary.")
+    click.echo("  Example:")
+    click.echo("   tracecode \u203a 8a3f1b2 \u00b7 myproject   Needs Review  \u00b7  review auth/session.py first")
+    click.echo()
+    click.echo("  Run 'tracecode review' for the full session detail.")
+    click.echo("  Run 'tracecode install-hook --remove' to uninstall.")
 
 
 # ---------------------------------------------------------------------------
