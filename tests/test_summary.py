@@ -190,7 +190,7 @@ class TestTrustedWithCaveats:
 # ---------------------------------------------------------------------------
 
 class TestReviewRequired:
-    def test_shows_needs_review_label(self) -> None:
+    def test_shows_verify_output_label(self) -> None:
         result = render_session_summary(
             session=session(verdict="review_required"),
             anomalies=[anomaly("dirty_tree", "Uncommitted changes at end", "major")],
@@ -198,7 +198,7 @@ class TestReviewRequired:
             risk_counts=risk_counts(),
             use_color=False,
         )
-        assert "Needs Review" in result
+        assert "Verify Output" in result
 
     def test_shows_risky_command_count(self) -> None:
         result = render_session_summary(
@@ -268,7 +268,7 @@ class TestReviewRequired:
 # ---------------------------------------------------------------------------
 
 class TestHighRisk:
-    def test_shows_high_risk_label(self) -> None:
+    def test_shows_high_risk_session_label(self) -> None:
         result = render_session_summary(
             session=session(verdict="high_risk"),
             anomalies=[anomaly("tests_failed", "Tests failed", "major")],
@@ -276,7 +276,7 @@ class TestHighRisk:
             risk_counts=risk_counts(risky=1),
             use_color=False,
         )
-        assert "High Risk" in result
+        assert "High-Risk Session" in result
 
     def test_shows_top_major_anomaly(self) -> None:
         result = render_session_summary(
@@ -343,7 +343,7 @@ class TestCompactMode:
             compact=True,
             use_color=False,
         )
-        assert "Needs Review" in result
+        assert "Verify Output" in result
 
     def test_contains_top_file(self) -> None:
         result = render_session_summary(
@@ -585,8 +585,8 @@ class TestEdgeCases:
         # (The verdict label "Needs Review" contains "review" but that is expected.)
         assert "   review    " not in result
 
-    def test_caution_anomaly_not_in_issues_line(self) -> None:
-        # Caution-level anomalies (e.g. no_tests) are not shown in the brief summary
+    def test_caution_anomaly_not_shown_in_summary(self) -> None:
+        # Caution-level anomalies are not shown in the brief summary lines
         result = render_session_summary(
             session=session(verdict="trusted_with_caveats"),
             anomalies=[anomaly("no_tests", "Tests not checked", "caution")],
@@ -594,5 +594,196 @@ class TestEdgeCases:
             risk_counts=risk_counts(),
             use_color=False,
         )
-        # No issues line should appear for a caution-only session
+        # No output or session line should appear for a caution-only session;
+        # the word "issues" should never appear in output (replaced by output/session labels)
         assert "issues" not in result
+        assert "output" not in result.split("verdict")[1] if "verdict" in result else True
+
+
+# ---------------------------------------------------------------------------
+# 10. Output vs process anomaly category split
+# ---------------------------------------------------------------------------
+
+class TestCategoryDisplay:
+    def _anomaly_with_category(self, id_: str, label: str, severity: str, category: str) -> dict:
+        return {"id": id_, "label": label, "detail": "", "severity": severity, "category": category}
+
+    def test_output_anomaly_appears_on_output_line(self) -> None:
+        result = render_session_summary(
+            session=session(verdict="review_required"),
+            anomalies=[
+                self._anomaly_with_category("dirty_tree", "Uncommitted changes at end", "major", "output"),
+            ],
+            review_first=[],
+            risk_counts=risk_counts(),
+            use_color=False,
+        )
+        assert "   output    uncommitted changes at end" in result
+
+    def test_process_anomaly_appears_on_session_line(self) -> None:
+        result = render_session_summary(
+            session=session(verdict="review_required"),
+            anomalies=[
+                self._anomaly_with_category("file_churn", "Files edited repeatedly", "minor", "process"),
+            ],
+            review_first=[],
+            risk_counts=risk_counts(),
+            use_color=False,
+        )
+        assert "   session   files edited repeatedly" in result
+
+    def test_output_and_process_shown_on_separate_lines(self) -> None:
+        result = render_session_summary(
+            session=session(verdict="high_risk"),
+            anomalies=[
+                self._anomaly_with_category("tests_failing_final", "Tests failing at session end", "major", "output"),
+                self._anomaly_with_category("file_churn", "Files edited repeatedly", "minor", "process"),
+            ],
+            review_first=[],
+            risk_counts=risk_counts(risky=1),
+            use_color=False,
+        )
+        assert "   output    " in result
+        assert "   session   " in result
+        assert "tests failing at session end" in result.lower()
+        assert "files edited repeatedly" in result.lower()
+
+    def test_no_session_line_when_no_process_anomalies(self) -> None:
+        result = render_session_summary(
+            session=session(verdict="review_required"),
+            anomalies=[
+                self._anomaly_with_category("dirty_tree", "Uncommitted changes at end", "major", "output"),
+            ],
+            review_first=[],
+            risk_counts=risk_counts(),
+            use_color=False,
+        )
+        assert "   session   " not in result
+
+    def test_no_output_line_when_only_process_anomalies(self) -> None:
+        result = render_session_summary(
+            session=session(verdict="trusted_with_caveats"),
+            anomalies=[
+                self._anomaly_with_category("file_churn", "Files edited repeatedly", "minor", "process"),
+            ],
+            review_first=[],
+            risk_counts=risk_counts(),
+            use_color=False,
+        )
+        # "session" line should appear; "output" line should not
+        assert "   session   " in result
+        assert "   output    " not in result
+
+    def test_full_mode_shows_output_flags_section(self) -> None:
+        result = render_session_summary(
+            session=session(verdict="review_required"),
+            anomalies=[
+                self._anomaly_with_category("dirty_tree", "Uncommitted changes at end", "major", "output"),
+            ],
+            review_first=[],
+            risk_counts=risk_counts(),
+            full=True,
+            use_color=False,
+        )
+        assert "output flags" in result
+        assert "Uncommitted changes at end" in result
+
+    def test_full_mode_shows_session_noise_section(self) -> None:
+        result = render_session_summary(
+            session=session(verdict="review_required"),
+            anomalies=[
+                self._anomaly_with_category("file_churn", "Files edited repeatedly", "minor", "process"),
+            ],
+            review_first=[],
+            risk_counts=risk_counts(),
+            full=True,
+            use_color=False,
+        )
+        assert "session noise" in result
+        assert "Files edited repeatedly" in result
+
+    def test_full_mode_no_session_noise_when_no_process_anomalies(self) -> None:
+        result = render_session_summary(
+            session=session(verdict="review_required"),
+            anomalies=[
+                self._anomaly_with_category("dirty_tree", "Uncommitted changes at end", "major", "output"),
+            ],
+            review_first=[],
+            risk_counts=risk_counts(),
+            full=True,
+            use_color=False,
+        )
+        assert "session noise" not in result
+
+
+# ---------------------------------------------------------------------------
+# 11. New test signal semantics (final_test_state)
+# ---------------------------------------------------------------------------
+
+class TestTestSignalSemantics:
+    def _anomaly_with_category(self, id_: str, label: str, severity: str, category: str) -> dict:
+        return {"id": id_, "label": label, "detail": "", "severity": severity, "category": category}
+
+    def test_tests_failing_final_shown_as_output_anomaly(self) -> None:
+        result = render_session_summary(
+            session=session(verdict="high_risk"),
+            anomalies=[
+                self._anomaly_with_category(
+                    "tests_failing_final", "Tests failing at session end", "major", "output"
+                ),
+            ],
+            review_first=[],
+            risk_counts=risk_counts(risky=1),
+            use_color=False,
+        )
+        assert "tests failing at session end" in result.lower()
+        assert "   output    " in result
+
+    def test_tests_failing_label_does_not_say_during_session(self) -> None:
+        # The new label is about the FINAL state, not a transient event
+        result = render_session_summary(
+            session=session(verdict="review_required"),
+            anomalies=[
+                self._anomaly_with_category(
+                    "tests_failing_final", "Tests failing at session end", "major", "output"
+                ),
+            ],
+            review_first=[],
+            risk_counts=risk_counts(),
+            use_color=False,
+        )
+        assert "at session end" in result.lower()
+
+    def test_high_risk_session_label_shows_for_high_risk(self) -> None:
+        result = render_session_summary(
+            session=session(verdict="high_risk"),
+            anomalies=[],
+            review_first=[],
+            risk_counts=risk_counts(risky=2),
+            use_color=False,
+        )
+        assert "High-Risk Session" in result
+
+    def test_verify_output_label_shows_for_review_required(self) -> None:
+        result = render_session_summary(
+            session=session(verdict="review_required"),
+            anomalies=[],
+            review_first=[],
+            risk_counts=risk_counts(risky=1),
+            use_color=False,
+        )
+        assert "Verify Output" in result
+
+    def test_no_accepting_changes_framing_in_output(self) -> None:
+        # Regression: output must never say "before accepting changes"
+        for verdict in ("review_required", "high_risk", "blocked", "trusted_with_caveats"):
+            result = render_session_summary(
+                session=session(verdict=verdict),
+                anomalies=[],
+                review_first=[],
+                risk_counts=risk_counts(risky=1 if verdict != "blocked" else 0,
+                                        catastrophic=1 if verdict == "blocked" else 0),
+                use_color=False,
+            )
+            assert "before accepting" not in result.lower(), \
+                f"Verdict '{verdict}' output contains 'before accepting': {result}"

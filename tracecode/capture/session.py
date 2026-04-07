@@ -194,10 +194,12 @@ def end_session(
         from tracecode.analysis.tests import detect_test_outcome
         outcome, source = detect_test_outcome(project_path, started_at, config)
         if outcome is not None:
+            final_test_state = "passing" if outcome == "pass" else "failing"
             with get_conn(config.db_path) as conn:
                 update_session(conn, session_id,
-                    test_outcome = outcome,
-                    test_source  = source,
+                    test_outcome     = outcome,
+                    test_source      = source,
+                    final_test_state = final_test_state,
                 )
     except Exception as exc:
         logger.warning("Test detection failed for %s: %s", session_id, exc)

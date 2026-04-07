@@ -205,51 +205,71 @@ def compute_anomalies(
         label     str   short human label
         detail    str   one-line explanation or evidence
         severity  str   "major" | "minor" | "caution"
+        category  str   "output" | "process"
+
+    category distinguishes what kind of signal this is:
+        output  — reflects the final committed state (tests failing, dirty tree,
+                  sensitive files written). These are trust signals about the
+                  output the AI produced.
+        process — reflects how the session went (churn, no commits, large diff).
+                  These describe session quality, not necessarily output trust.
 
     Ordered: major first, then minor, then caution.
     Risky commands are NOT included — the verdict engine reads them separately.
 
     Severity taxonomy:
-        major   — tests_failed, dirty_tree, sensitive_files, low_survival
-        minor   — no_commits, file_churn, large_diff
+        major   — tests_failing_final, dirty_tree, sensitive_files, low_survival
+        minor   — no_commits, file_churn, large_diff, runtime_checkpoint
         caution — no_tests  (informational; never affects verdict)
     """
     results: list[dict] = []
 
-    def add(id_: str, label: str, detail: str, severity: str) -> None:
-        results.append({"id": id_, "label": label, "detail": detail, "severity": severity})
+    def add(id_: str, label: str, detail: str, severity: str, category: str = "output") -> None:
+        results.append({"id": id_, "label": label, "detail": detail,
+                        "severity": severity, "category": category})
 
-    # ── major ────────────────────────────────────────────────────────────────
+    # ── output anomalies — major ──────────────────────────────────────────────
 
-    if session.get("test_outcome") == "fail":
+    # Test signal: use final_test_state when available (set since v0.x).
+    # For sessions recorded before this column existed, fall back to test_outcome.
+    final_test_state = session.get("final_test_state")
+    if final_test_state == "failing":
+        source = session.get("test_source") or "test runner"
+        add("tests_failing_final", "Tests failing at session end",
+            f"Last known test run failed ({source})", "major", "output")
+    elif session.get("test_outcome") == "fail" and final_test_state is None:
+        # Backward compat: sessions recorded before final_test_state was introduced.
         source = session.get("test_source") or "test runner"
         add("tests_failed", "Tests failed",
-            f"Test suite failed at session end ({source})", "major")
+            f"Test suite reported failures ({source})", "major", "output")
 
     if session.get("tree_dirty"):
         add("dirty_tree", "Uncommitted changes at end",
-            "Working directory was not clean when the session ended", "major")
+            "Working directory was not clean when the session ended", "major", "output")
 
     if session.get("sensitive_files_touched"):
         matched = [t["file_path"] for t in file_touches if is_sensitive_file(t["file_path"])]
         detail = " · ".join(matched[:5])
         if len(matched) > 5:
             detail += f" and {len(matched) - 5} more"
-        add("sensitive_files", "Config or env files modified", detail or "sensitive file detected", "major")
+        add("sensitive_files", "Config or env files modified",
+            detail or "sensitive file detected", "major", "output")
+
+    # ── process anomalies — major ─────────────────────────────────────────────
 
     persistence_rate = session.get("persistence_rate")
     persistence_reliable = bool(session.get("persistence_reliable"))
     if persistence_reliable and persistence_rate is not None and persistence_rate < 0.5:
         pct_val = int(round(persistence_rate * 100))
         add("low_survival", "Most edits were reverted",
-            f"Only {pct_val}% of touched files survived to git", "major")
+            f"Only {pct_val}% of touched files survived to git", "major", "process")
 
-    # ── minor ────────────────────────────────────────────────────────────────
+    # ── process anomalies — minor ─────────────────────────────────────────────
 
     commits_during = session.get("commits_during")
     if session.get("ended_at") is not None and commits_during is not None and commits_during == 0:
         add("no_commits", "No commits made",
-            "Claude made no git commits during this session", "minor")
+            "Claude made no git commits during this session", "minor", "process")
 
     hot_files = int(session.get("hot_files") or 0)
     if hot_files > 0:
@@ -259,14 +279,12 @@ def compute_anomalies(
             detail += f" and {hot_files - 3} more"
         add("file_churn", "Files edited repeatedly",
             detail or f"{hot_files} file{'s' if hot_files != 1 else ''} touched 3+ times",
-            "minor")
+            "minor", "process")
 
     diff_lines = session.get("diff_lines")
     if diff_lines is not None and diff_lines > 500:
         add("large_diff", "Unusually large changeset",
-            f"{diff_lines:,} lines changed — review carefully", "minor")
-
-    # ── minor: runtime checkpoint ────────────────────────────────────────────
+            f"{diff_lines:,} lines changed — review carefully", "minor", "process")
 
     if session_events:
         checkpoint_types = {"blast_radius", "file_churn", "risky_accumulation"}
@@ -281,13 +299,14 @@ def compute_anomalies(
                 type_labels[e["event_type"]] for e in fired if e["event_type"] in type_labels
             )
             add("runtime_checkpoint", "Live alert fired",
-                f"Runtime flags during session: {detail}", "minor")
+                f"Runtime flags during session: {detail}", "minor", "process")
 
-    # ── caution ──────────────────────────────────────────────────────────────
+    # ── output anomalies — caution ────────────────────────────────────────────
 
-    if session.get("test_outcome") is None and session.get("ended_at") is not None:
-        add("no_tests", "Tests not checked",
-            "No test runner output found for this session", "caution")
+    effective_test_signal = final_test_state or session.get("test_outcome")
+    if effective_test_signal is None and session.get("ended_at") is not None:
+        add("no_tests", "Tests not detected",
+            "No test runner output found for this session", "caution", "output")
 
     return results
 

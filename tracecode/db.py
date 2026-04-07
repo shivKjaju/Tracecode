@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- Test outcome (populated during session-end)
     test_outcome         TEXT,           -- 'pass' | 'fail' | NULL
     test_source          TEXT,           -- 'config' | 'artifact' | NULL
+    final_test_state     TEXT,           -- 'passing' | 'failing' | NULL (most recent known state)
 
     -- Computed scores (populated during session-end)
     wandering_score      REAL,           -- 0.0-1.0
@@ -122,6 +123,7 @@ _MUTABLE_SESSION_COLUMNS = {
     "persistence_reliable",
     "test_outcome",
     "test_source",
+    "final_test_state",
     "wandering_score",
     "outcome_score",
     "quality_score",
@@ -145,6 +147,7 @@ _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN verdict TEXT",
     "ALTER TABLE sessions ADD COLUMN sensitive_files_touched INTEGER DEFAULT 0",
     "ALTER TABLE sessions ADD COLUMN diff_lines INTEGER",
+    "ALTER TABLE sessions ADD COLUMN final_test_state TEXT",
 ]
 
 def _run_migrations(conn: sqlite3.Connection) -> None:

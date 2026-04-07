@@ -28,8 +28,8 @@ from pathlib import Path
 _VERDICT_LABELS: dict[str, str] = {
     "trusted":              "Trusted",
     "trusted_with_caveats": "Trusted with caveats",
-    "review_required":      "Needs Review",
-    "high_risk":            "High Risk",
+    "review_required":      "Verify Output",
+    "high_risk":            "High-Risk Session",
     "blocked":              "Blocked",
 }
 
@@ -165,6 +165,18 @@ def render_session_summary(
     catastrophic_count = int(risk_counts.get("catastrophic", 0))
     total_risky        = risky_count + catastrophic_count
 
+    # Split anomalies by category. Anomalies without a category field (e.g.
+    # from tests or old data) default to "output" so they surface prominently.
+    output_anomalies  = [a for a in anomalies if a.get("category", "output") == "output"]
+    process_anomalies = [a for a in anomalies if a.get("category", "output") == "process"]
+
+    output_major   = [a for a in output_anomalies  if a.get("severity") == "major"]
+    output_minor   = [a for a in output_anomalies  if a.get("severity") == "minor"]
+    output_caution = [a for a in output_anomalies  if a.get("severity") == "caution"]
+    process_major  = [a for a in process_anomalies if a.get("severity") == "major"]
+    process_minor  = [a for a in process_anomalies if a.get("severity") == "minor"]
+
+    # Flat severity lists still needed for compact mode and trusted-with-caveats logic.
     major_anomalies   = [a for a in anomalies if a.get("severity") == "major"]
     minor_anomalies   = [a for a in anomalies if a.get("severity") == "minor"]
     caution_anomalies = [a for a in anomalies if a.get("severity") == "caution"]
@@ -207,27 +219,36 @@ def render_session_summary(
     # Verdict
     lines.append(f"   verdict   {verdict_str}")
 
-    # Issues line
-    #
-    # For Trusted with caveats that has no major anomalies (only minor ones),
-    # show the top minor anomaly so the summary feels informative rather than
-    # empty — this is the explicit preference from the sprint spec.
-    issue_parts: list[str] = []
+    # Output line — risky/catastrophic commands + output anomalies.
+    # These are signals about what the AI actually left behind.
+    output_visible: list[str] = []
     if catastrophic_count:
         s = "s" if catastrophic_count > 1 else ""
-        issue_parts.append(f"{catastrophic_count} catastrophic command{s} blocked")
+        output_visible.append(f"{catastrophic_count} catastrophic command{s} blocked")
     elif total_risky:
         s = "s" if total_risky > 1 else ""
-        issue_parts.append(f"{total_risky} risky command{s}")
+        output_visible.append(f"{total_risky} risky command{s}")
 
-    if major_anomalies:
-        issue_parts.append(major_anomalies[0]["label"].lower())
-    elif verdict == "trusted_with_caveats" and minor_anomalies:
-        # Show the minor reason so caveat sessions are never silent
-        issue_parts.append(minor_anomalies[0]["label"].lower())
+    if output_major:
+        output_visible.append(output_major[0]["label"].lower())
+    elif verdict == "trusted_with_caveats" and output_minor:
+        # Surface the minor output anomaly so caveat sessions are never silent.
+        output_visible.append(output_minor[0]["label"].lower())
 
-    if issue_parts:
-        lines.append(f"   issues    {' \u00b7 '.join(issue_parts[:2])}")
+    if output_visible:
+        lines.append(f"   output    {' \u00b7 '.join(output_visible[:2])}")
+
+    # Session line — process anomalies.
+    # These describe how the session went, not necessarily the output quality.
+    process_visible = process_major + process_minor
+    if not process_visible and verdict == "trusted_with_caveats" and not output_visible:
+        # Edge case: caveat session with only process-category minor anomalies
+        # but anomalies had no category field (e.g. from tests). Fall back to
+        # showing the first minor anomaly so the summary is never empty.
+        process_visible = minor_anomalies[:1]
+    if process_visible:
+        process_labels = [a["label"].lower() for a in process_visible[:2]]
+        lines.append(f"   session   {' \u00b7 '.join(process_labels)}")
 
     # Review first section
     if full:
@@ -252,18 +273,27 @@ def render_session_summary(
             pad        = "   review    " if i == 0 else "             "
             lines.append(f"{pad}{label}")
 
-    # Full mode: show all anomalies grouped by severity
+    # Full mode: show anomalies in two sections — output flags and session noise.
+    # output flags = what the AI left behind (trust signals about the output).
+    # session noise = how the session went (process quality signals).
     if full:
-        has_anomalies = major_anomalies or minor_anomalies or caution_anomalies
-        if has_anomalies:
+        if output_major or output_minor or output_caution:
             lines.append("")
-            lines.append("   anomalies")
-            for a in major_anomalies:
+            lines.append("   output flags")
+            for a in output_major:
                 lines.append(f"     \u2717  {a['label']}")
-            for a in minor_anomalies:
+            for a in output_minor:
                 lines.append(f"     !  {a['label']}")
-            for a in caution_anomalies:
+            for a in output_caution:
                 lines.append(f"     \u00b7  {a['label']}")
+
+        if process_major or process_minor:
+            lines.append("")
+            lines.append("   session noise")
+            for a in process_major:
+                lines.append(f"     \u2717  {a['label']}")
+            for a in process_minor:
+                lines.append(f"     !  {a['label']}")
 
     # Footer
     lines.append("")

@@ -597,7 +597,7 @@ def cmd_install_hook(project_path: str | None, remove: bool) -> None:
     click.echo()
     click.echo("  After each AI coding session, commits here will show a trust summary.")
     click.echo("  Example:")
-    click.echo("   tracecode \u203a 8a3f1b2 \u00b7 myproject   Needs Review  \u00b7  review auth/session.py first")
+    click.echo("   tracecode \u203a 8a3f1b2 \u00b7 myproject   Verify Output  \u00b7  review auth/session.py first")
     click.echo()
     click.echo("  Run 'tracecode review' for the full session detail.")
     click.echo("  Run 'tracecode install-hook --remove' to uninstall.")
