@@ -1,4 +1,4 @@
-by by  # Tracecode
+# Tracecode
 
 **Tracecode watches every Claude Code session and tells you what to trust, review, or look at first.**
 
@@ -50,9 +50,11 @@ It runs locally, stores nothing remotely, and stays out of the way until somethi
 
 ## What you get
 
-- **Trust verdict** on every session — Trusted / Trusted with Caveats / Needs Review / High Risk / Blocked
-- **Review First** — the top 3–5 files most worth inspecting, ranked automatically
+- **Trust verdict** on every session — Trusted / Trusted with Caveats / Verify Output / High-Risk Session / Blocked
+- **Session summary** — printed to your terminal the moment Claude exits, split into output signals and session noise
+- **Review First** — the top files most worth inspecting, ranked automatically
 - **Blocked commands** — catastrophic shell commands stopped before they run
+- **Pre-commit hook** — one-line trust summary before every `git commit` (`tracecode install-hook`)
 - **Session feed** — all sessions in one place, with verdicts and key signals at a glance
 
 ---
@@ -100,25 +102,39 @@ Expected output:
 cd your-project
 claude                  # runs exactly as before
 
-# when the session ends:
-tracecode serve         # open http://localhost:7842
+# when the session ends, Tracecode prints a summary to the terminal:
+#
+#    verdict   Verify Output
+#    output    tests failing at session end
+#    session   files edited repeatedly · large changeset
+#
+#    review    auth/middleware.py   protected path · repeated edits
+
+tracecode review        # full detail in the terminal
+tracecode serve         # open http://localhost:7842 for the full UI
 ```
 
 That's it. You don't change how you use Claude.
+
+### Optional: pre-commit hook
+
+```bash
+tracecode install-hook   # shows a one-line trust summary before every git commit
+```
 
 ---
 
 ## Trust verdicts
 
-| Verdict | What it means | What to do |
-|---------|---------------|------------|
-| **Trusted** | All signals clear | Safe to continue — no action needed |
-| **Trusted with Caveats** | Minor signals worth a look | Scan the issues section before closing |
-| **Needs Review** | Risky commands used or multiple issues | Read flagged commands and changed files before continuing |
-| **High Risk** | Multiple serious signals | Don't merge or deploy until you've reviewed every flagged item |
-| **Blocked** | A catastrophic command was attempted | Treat all outputs as untrusted — audit every change before use |
+| Verdict | What it means |
+|---------|---------------|
+| **Trusted** | All signals clear — clean session, clean output |
+| **Trusted with Caveats** | Minor noise in the session or output — worth a glance |
+| **Verify Output** | Risky commands used or output-level issues detected — review flagged files |
+| **High-Risk Session** | Multiple serious signals — inspect output carefully before relying on it |
+| **Blocked** | A catastrophic command was attempted — audit every change |
 
-Verdicts are computed from: risky/catastrophic commands, test outcome, dirty working tree, sensitive file edits, low git persistence, and diff size.
+Verdicts are based on **output signals** (tests failing at session end, uncommitted changes, sensitive files written) and **session noise** (churn, large diffs, no commits). These are shown separately so a messy session that produced clean output doesn't look the same as one that left broken state behind.
 
 ---
 
