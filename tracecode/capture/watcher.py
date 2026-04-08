@@ -20,6 +20,7 @@ are excluded from all metrics and counted separately as ignored_touches.
 import collections
 import json
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -94,6 +95,11 @@ _AGGREGATION_IGNORE_NAMES: frozenset[str] = frozenset({
     "go.sum",
     "composer.lock",
 })
+
+# Claude Code (and many editors) do atomic writes: write to a temp file then
+# rename it to the destination. The temp file itself carries no signal — it is
+# a write artifact, not a real edit. Pattern: {filename}.tmp.{pid}.{timestamp}
+_ATOMIC_WRITE_RE = re.compile(r'\.tmp\.\d+\.\d+$')
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +275,7 @@ def _get_gitignored_paths(paths: list[str], project_path: str) -> frozenset[str]
 
 
 def _is_transient(rel_path: str) -> bool:
-    """Return True if the file is a lock file or generated artifact."""
+    """Return True if the file is a lock file, generated artifact, or atomic-write temp."""
     p = Path(rel_path)
     if p.name in _AGGREGATION_IGNORE_NAMES:
         return True
@@ -277,6 +283,10 @@ def _is_transient(rel_path: str) -> bool:
     for ext in _AGGREGATION_IGNORE_EXTENSIONS:
         if rel_path.endswith(ext):
             return True
+    # Atomic write temp files: {filename}.tmp.{pid}.{timestamp}
+    # These are write artifacts from Claude Code and many editors — never real edits.
+    if _ATOMIC_WRITE_RE.search(p.name):
+        return True
     return False
 
 
@@ -356,7 +366,10 @@ def aggregate_watch_file(
     if rows:
         bulk_insert_file_touches(conn, rows)
 
-    hot_files = sum(1 for p in real_paths if touches[p]["count"] >= 3)
+    # A file must be touched 5+ times to be considered "hot" (repeatedly edited).
+    # Threshold matches the live-alert threshold in FileChangeHandler._check_thresholds.
+    # Normal iterative editing touches a file 2-4 times; 5+ signals actual churn.
+    hot_files = sum(1 for p in real_paths if touches[p]["count"] >= 5)
     update_session(conn, session_id,
                    files_touched=len(real_paths),
                    hot_files=hot_files,

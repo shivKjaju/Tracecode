@@ -273,12 +273,12 @@ def compute_anomalies(
 
     hot_files = int(session.get("hot_files") or 0)
     if hot_files > 0:
-        hot_paths = [t["file_path"] for t in file_touches if t.get("touch_count", 0) >= 3]
+        hot_paths = [t["file_path"] for t in file_touches if t.get("touch_count", 0) >= 5]
         detail = " · ".join(hot_paths[:3])
         if hot_files > 3:
             detail += f" and {hot_files - 3} more"
         add("file_churn", "Files edited repeatedly",
-            detail or f"{hot_files} file{'s' if hot_files != 1 else ''} touched 3+ times",
+            detail or f"{hot_files} file{'s' if hot_files != 1 else ''} touched 5+ times",
             "minor", "process")
 
     diff_lines = session.get("diff_lines")
