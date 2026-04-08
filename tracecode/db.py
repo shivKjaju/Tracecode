@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     git_branch           TEXT,
     git_commit_before    TEXT,
     git_commit_after     TEXT,
+    git_dirty_files_at_start TEXT,   -- JSON array of dirty paths at session start; NULL = unknown
 
     -- Process result
     claude_exit_code     INTEGER,
@@ -148,6 +149,7 @@ _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN sensitive_files_touched INTEGER DEFAULT 0",
     "ALTER TABLE sessions ADD COLUMN diff_lines INTEGER",
     "ALTER TABLE sessions ADD COLUMN final_test_state TEXT",
+    "ALTER TABLE sessions ADD COLUMN git_dirty_files_at_start TEXT",
 ]
 
 def _run_migrations(conn: sqlite3.Connection) -> None:
@@ -222,10 +224,10 @@ def insert_session(conn: sqlite3.Connection, session: dict) -> str:
         """
         INSERT INTO sessions (
             id, started_at, project_path, project_name,
-            git_branch, git_commit_before
+            git_branch, git_commit_before, git_dirty_files_at_start
         ) VALUES (
             :id, :started_at, :project_path, :project_name,
-            :git_branch, :git_commit_before
+            :git_branch, :git_commit_before, :git_dirty_files_at_start
         )
         """,
         {
@@ -235,6 +237,7 @@ def insert_session(conn: sqlite3.Connection, session: dict) -> str:
             "project_name": session["project_name"],
             "git_branch": session.get("git_branch"),
             "git_commit_before": session.get("git_commit_before"),
+            "git_dirty_files_at_start": session.get("git_dirty_files_at_start"),
         },
     )
     return session["id"]

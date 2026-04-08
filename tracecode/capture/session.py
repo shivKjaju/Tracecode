@@ -20,6 +20,7 @@ and skipped — it never prevents later steps from running and never surfaces
 as an error to the developer after their claude session ends.
 """
 
+import json
 import logging
 import os
 import signal
@@ -51,14 +52,26 @@ def start_session(
     session_id = str(uuid.uuid4())
     now = int(time.time())
 
+    # Snapshot dirty working-tree files at session start so that session-end
+    # can distinguish pre-existing dirty state from session-introduced dirty state.
+    dirty_at_start: str | None = None
+    try:
+        from tracecode.capture.git import get_dirty_files, is_git_repo
+        if is_git_repo(str(project_path)):
+            dirty_files = get_dirty_files(str(project_path))
+            dirty_at_start = json.dumps(dirty_files)
+    except Exception:
+        pass  # non-fatal — fall back to full dirty check at session end
+
     with get_conn(config.db_path) as conn:
         insert_session(conn, {
-            "id":               session_id,
-            "started_at":       now,
-            "project_path":     str(project_path),
-            "project_name":     project_path.name,
-            "git_branch":       git_branch or None,
-            "git_commit_before": git_commit or None,
+            "id":                       session_id,
+            "started_at":               now,
+            "project_path":             str(project_path),
+            "project_name":             project_path.name,
+            "git_branch":               git_branch or None,
+            "git_commit_before":        git_commit or None,
+            "git_dirty_files_at_start": dirty_at_start,
         })
 
     return session_id
@@ -155,17 +168,32 @@ def end_session(
         from tracecode.capture.git import (
             count_diff_lines,
             get_commits_since,
+            get_dirty_files,
             get_head_sha,
             is_git_repo,
-            is_tree_dirty,
         )
         if project_path and is_git_repo(project_path):
             diff_lines = count_diff_lines(project_path, git_commit_before or None)
+
+            # Compare dirty state at end against start snapshot.
+            # tree_dirty = True only when the session INTRODUCED new dirty files —
+            # pre-existing untracked / modified files that were there before the
+            # session started don't count against it.
+            dirty_now = set(get_dirty_files(project_path))
+            dirty_at_start_json = session_row.get("git_dirty_files_at_start")
+            if dirty_at_start_json is not None:
+                dirty_at_start = set(json.loads(dirty_at_start_json))
+                tree_dirty = 1 if (dirty_now - dirty_at_start) else 0
+            else:
+                # No start snapshot (old session or git failed at start) — fall back
+                # to the original behaviour so we don't silently suppress real signal.
+                tree_dirty = 1 if dirty_now else 0
+
             with get_conn(config.db_path) as conn:
                 update_session(conn, session_id,
                     git_commit_after = get_head_sha(project_path),
                     commits_during   = get_commits_since(project_path, git_commit_before or None),
-                    tree_dirty       = 1 if is_tree_dirty(project_path) else 0,
+                    tree_dirty       = tree_dirty,
                     diff_lines       = diff_lines,
                 )
     except Exception as exc:
