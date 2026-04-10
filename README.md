@@ -1,4 +1,4 @@
-# Tracecode
+CT# Tracecode
 
 **Tracecode watches every Claude Code session and tells you what to trust, review, or look at first.**
 
@@ -304,4 +304,5 @@ cd ui && npm run dev
 ```
 
 The backend is FastAPI + SQLite, serving a statically-exported Next.js UI. All scoring logic lives in `tracecode/analysis/scoring.py` — pure functions, no I/O, easy to test in isolation.
+
 </details>
